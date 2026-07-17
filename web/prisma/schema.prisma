@@ -1,0 +1,216 @@
+// Aria AI — database schema
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum PlanTier {
+  FREE
+  PLUS
+  PRO
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELED
+  EXPIRED
+  PAST_DUE
+}
+
+enum PaymentStatus {
+  CREATED
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentProvider {
+  RAZORPAY
+  STRIPE
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  passwordHash  String
+  role          Role      @default(USER)
+  emailVerified DateTime?
+  image         String?
+  banned        Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  subscription  Subscription?
+  payments      Payment[]
+  conversations Conversation[]
+  usage         UsageLog[]
+  apiKeys       ApiKey[]
+}
+
+model ApiKey {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  keyHash    String     @unique // sha256 of the full key
+  prefix     String // first chars shown in dashboard (aria_sk_xxxx...)
+  revoked    Boolean    @default(false)
+  lastUsedAt DateTime?
+  createdAt  DateTime   @default(now())
+  usage      ApiUsage[]
+
+  @@index([userId])
+}
+
+model ApiUsage {
+  id       String   @id @default(cuid())
+  apiKeyId String
+  apiKey   ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  day      DateTime @db.Date
+  requests Int      @default(0)
+
+  @@unique([apiKeyId, day])
+}
+
+model Subscription {
+  id                String             @id @default(cuid())
+  userId            String             @unique
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tier              PlanTier           @default(FREE)
+  status            SubscriptionStatus @default(ACTIVE)
+  provider          PaymentProvider?
+  providerSubId     String?            // razorpay subscription id / stripe subscription id
+  currentPeriodEnd  DateTime?
+  cancelAtPeriodEnd Boolean            @default(false)
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+}
+
+model Payment {
+  id              String          @id @default(cuid())
+  userId          String
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        PaymentProvider
+  providerOrderId String          @unique
+  providerPayId   String?
+  amount          Int             // smallest currency unit
+  currency        String
+  tier            PlanTier
+  status          PaymentStatus   @default(CREATED)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@index([userId])
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  personaId String?
+  persona   Persona?  @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  title     String    @default("New chat")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  messages  Message[]
+
+  @@index([userId, updatedAt])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String       // "user" | "assistant"
+  content        String
+  mediaId        String?
+  media          MediaAsset?  @relation(fields: [mediaId], references: [id], onDelete: SetNull)
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Persona engine: multiple AI companions, each with a personality, photo
+// vault, and per-user long-term memory.
+// ---------------------------------------------------------------------------
+
+enum MediaCategory {
+  SELFIE      // "what do you look like", verification-style asks
+  CASUAL      // everyday life shots
+  MORNING     // morning context
+  NIGHT       // evening/night context
+  ACTIVITY    // hobby/outing shots
+  MOOD        // emotive
+}
+
+model Persona {
+  id            String         @id @default(cuid())
+  slug          String         @unique
+  name          String
+  tagline       String         @default("")
+  age           Int            @default(24)
+  systemPrompt  String
+  chatStyle     String         @default("youthful") // youthful | mature
+  avatarUrl     String         @default("/aria/avatar.svg")
+  isDefault     Boolean        @default(false)
+  active        Boolean        @default(true)
+  minTier       PlanTier       @default(FREE) // gate premium personas
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  media         MediaAsset[]
+  conversations Conversation[]
+  memories      UserMemory[]
+}
+
+model MediaAsset {
+  id          String        @id @default(cuid())
+  personaId   String
+  persona     Persona       @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  category    MediaCategory
+  description String        @default("") // lets the AI reference what's in the photo
+  path        String        // stored under uploads/, served via authenticated route
+  active      Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  messages    Message[]
+
+  @@index([personaId, category])
+}
+
+/// Long-term facts a persona remembers about a user, extracted from chats.
+model UserMemory {
+  id        String   @id @default(cuid())
+  userId    String
+  personaId String
+  persona   Persona  @relation(fields: [personaId], references: [id], onDelete: Cascade)
+  fact      String
+  createdAt DateTime @default(now())
+
+  @@index([userId, personaId])
+}
+
+model UsageLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  day       DateTime @db.Date
+  messages  Int      @default(0)
+
+  @@unique([userId, day])
+}
+
+// Admin-editable runtime settings (model name, system prompt, limits, plans)
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

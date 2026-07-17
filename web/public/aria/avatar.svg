@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#f43f5e"/>
+    </linearGradient>
+    <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4c2a63"/>
+      <stop offset="100%" stop-color="#2e1a3d"/>
+    </linearGradient>
+  </defs>
+  <!-- background -->
+  <circle cx="100" cy="100" r="100" fill="url(#bg)"/>
+  <!-- hair back -->
+  <path d="M100 32 C58 32 42 68 44 104 C45 132 52 156 58 168 L142 168 C148 156 155 132 156 104 C158 68 142 32 100 32 Z" fill="url(#hair)"/>
+  <!-- face -->
+  <ellipse cx="100" cy="98" rx="34" ry="38" fill="#f6d7c3"/>
+  <!-- hair front / bangs -->
+  <path d="M100 34 C64 34 52 64 54 92 C60 74 70 66 78 66 C74 78 76 84 80 88 C80 72 92 62 100 60 C108 62 120 72 120 88 C124 84 126 78 122 66 C130 66 140 74 146 92 C148 64 136 34 100 34 Z" fill="url(#hair)"/>
+  <!-- side hair strands -->
+  <path d="M62 90 C58 108 60 134 66 150 C70 152 74 152 76 150 C68 132 66 108 68 92 Z" fill="url(#hair)"/>
+  <path d="M138 90 C142 108 140 134 134 150 C130 152 126 152 124 150 C132 132 134 108 132 92 Z" fill="url(#hair)"/>
+  <!-- eyes -->
+  <ellipse cx="86" cy="98" rx="4.5" ry="6" fill="#3b2549"/>
+  <ellipse cx="114" cy="98" rx="4.5" ry="6" fill="#3b2549"/>
+  <circle cx="87.5" cy="95.5" r="1.6" fill="#fff"/>
+  <circle cx="115.5" cy="95.5" r="1.6" fill="#fff"/>
+  <!-- brows -->
+  <path d="M79 87 Q86 83 93 87" stroke="#4c2a63" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  <path d="M107 87 Q114 83 121 87" stroke="#4c2a63" stroke-width="2.4" fill="none" stroke-linecap="round"/>
+  <!-- blush -->
+  <ellipse cx="78" cy="110" rx="7" ry="4" fill="#f7a8b8" opacity="0.55"/>
+  <ellipse cx="122" cy="110" rx="7" ry="4" fill="#f7a8b8" opacity="0.55"/>
+  <!-- nose -->
+  <path d="M100 104 Q98 109 100 111" stroke="#e0b49a" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- smile -->
+  <path d="M91 119 Q100 127 109 119" stroke="#c96a6a" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- shoulders / top -->
+  <path d="M56 200 C56 168 76 156 100 156 C124 156 144 168 144 200 Z" fill="#7c3aed"/>
+  <!-- necklace heart -->
+  <path d="M100 168 l-3.5 -3.4 a2.4 2.4 0 0 1 3.5 -3.4 a2.4 2.4 0 0 1 3.5 3.4 Z" fill="#fda4af"/>
+</svg>
