@@ -1,1 +1,2 @@
+companion/data/processed/*.jsonl filter=lfs diff=lfs merge=lfs -text
 companion/data/processed/train.jsonl filter=lfs diff=lfs merge=lfs -text
