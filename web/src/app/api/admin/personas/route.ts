@@ -21,6 +21,7 @@ const createSchema = z.object({
   age: z.number().int().min(18).max(99).optional().default(24),
   systemPrompt: z.string().min(20).max(8000),
   chatStyle: z.enum(["youthful", "mature"]).optional().default("youthful"),
+  voice: z.string().max(32).optional().default("amy"),
   avatarUrl: z.string().max(300).optional(),
   minTier: z.enum(["FREE", "PLUS", "PRO"]).optional().default("FREE"),
   isDefault: z.boolean().optional().default(false),

@@ -53,25 +53,25 @@ export default function AdminPlansPage() {
     setTimeout(() => setMsg(""), 3000);
   }
 
-  if (!plans) return <p className="text-muted">Loading plans...</p>;
+  if (!plans) return <p className="text-text-secondary">Loading plans...</p>;
 
   return (
     <div className="max-w-4xl">
       <h1 className="text-2xl font-bold">Plans &amp; Billing</h1>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 text-sm text-text-secondary">
         Prices, limits, and trial settings. Changes apply instantly to the pricing page, checkout,
         and quota enforcement — no redeploy.
       </p>
 
       {/* Trial config */}
-      <div className="mt-8 rounded-2xl border border-border bg-card p-5">
+      <div className="mt-8 rounded-2xl border border-border bg-bg-elevated p-5">
         <h2 className="font-semibold">Free trial for new signups</h2>
-        <p className="mt-0.5 text-xs text-muted">
+        <p className="mt-0.5 text-xs text-text-secondary">
           0 days = no trial. Otherwise every new account starts with the chosen plan for N days.
         </p>
         <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
           <label className="flex items-center gap-2">
-            <span className="text-muted">Days:</span>
+            <span className="text-text-secondary">Days:</span>
             <input
               type="number"
               min={0}
@@ -82,7 +82,7 @@ export default function AdminPlansPage() {
             />
           </label>
           <label className="flex items-center gap-2">
-            <span className="text-muted">Trial plan:</span>
+            <span className="text-text-secondary">Trial plan:</span>
             <select
               value={trial.tier}
               onChange={(e) => setTrial((t) => ({ ...t, tier: e.target.value as Trial["tier"] }))}
@@ -100,11 +100,11 @@ export default function AdminPlansPage() {
         {TIERS.map((tier) => {
           const p = plans[tier];
           return (
-            <div key={tier} className="rounded-2xl border border-border bg-card p-5">
+            <div key={tier} className="rounded-2xl border border-border bg-bg-elevated p-5">
               <p className="text-xs font-bold uppercase tracking-wide text-accent-strong">{tier}</p>
               <div className="mt-3 space-y-3 text-sm">
                 <label className="block">
-                  <span className="text-xs text-muted">Display name</span>
+                  <span className="text-xs text-text-secondary">Display name</span>
                   <input
                     value={p.name}
                     onChange={(e) => set(tier, "name", e.target.value)}
@@ -112,7 +112,7 @@ export default function AdminPlansPage() {
                   />
                 </label>
                 <label className="block">
-                  <span className="text-xs text-muted">Tagline</span>
+                  <span className="text-xs text-text-secondary">Tagline</span>
                   <input
                     value={p.tagline}
                     onChange={(e) => set(tier, "tagline", e.target.value)}
@@ -121,7 +121,7 @@ export default function AdminPlansPage() {
                 </label>
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
-                    <span className="text-xs text-muted">Price ₹ (paise)</span>
+                    <span className="text-xs text-text-secondary">Price ₹ (paise)</span>
                     <input
                       type="number"
                       min={0}
@@ -131,7 +131,7 @@ export default function AdminPlansPage() {
                     />
                   </label>
                   <label className="block">
-                    <span className="text-xs text-muted">Price $ (cents)</span>
+                    <span className="text-xs text-text-secondary">Price $ (cents)</span>
                     <input
                       type="number"
                       min={0}
@@ -141,12 +141,12 @@ export default function AdminPlansPage() {
                     />
                   </label>
                 </div>
-                <p className="text-[10px] text-muted">
+                <p className="text-[10px] text-text-secondary">
                   Showing as: ₹{(p.priceInr / 100).toFixed(0)} / ${(p.priceUsd / 100).toFixed(2)}
                 </p>
                 <div className="grid grid-cols-2 gap-2">
                   <label className="block">
-                    <span className="text-xs text-muted">Msgs/day (-1 = ∞)</span>
+                    <span className="text-xs text-text-secondary">Msgs/day (-1 = ∞)</span>
                     <input
                       type="number"
                       min={-1}
@@ -156,7 +156,7 @@ export default function AdminPlansPage() {
                     />
                   </label>
                   <label className="block">
-                    <span className="text-xs text-muted">API req/day</span>
+                    <span className="text-xs text-text-secondary">API req/day</span>
                     <input
                       type="number"
                       min={-1}
@@ -167,7 +167,7 @@ export default function AdminPlansPage() {
                   </label>
                 </div>
                 <label className="block">
-                  <span className="text-xs text-muted">API keys allowed</span>
+                  <span className="text-xs text-text-secondary">API keys allowed</span>
                   <input
                     type="number"
                     min={0}
@@ -177,7 +177,7 @@ export default function AdminPlansPage() {
                   />
                 </label>
                 <label className="block">
-                  <span className="text-xs text-muted">Features (one per line)</span>
+                  <span className="text-xs text-text-secondary">Features (one per line)</span>
                   <textarea
                     rows={5}
                     value={p.features.join("\n")}

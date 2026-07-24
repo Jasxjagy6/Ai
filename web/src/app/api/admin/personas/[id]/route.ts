@@ -9,6 +9,7 @@ const patchSchema = z.object({
   age: z.number().int().min(18).max(99).optional(),
   systemPrompt: z.string().min(20).max(8000).optional(),
   chatStyle: z.enum(["youthful", "mature"]).optional(),
+  voice: z.string().max(32).optional(),
   avatarUrl: z.string().max(300).optional(),
   minTier: z.enum(["FREE", "PLUS", "PRO"]).optional(),
   isDefault: z.boolean().optional(),

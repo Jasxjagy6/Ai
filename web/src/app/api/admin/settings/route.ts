@@ -10,6 +10,11 @@ const ALLOWED_KEYS = [
   "temperature",
   "max_history_messages",
   "maintenance_mode",
+  "voice_enabled",
+  "voice_auto_reply",
+  "tts_url",
+  "vision_enabled",
+  "vision_model",
 ] as const;
 
 const schema = z.record(z.enum(ALLOWED_KEYS), z.string().max(8000));

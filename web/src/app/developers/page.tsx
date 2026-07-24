@@ -18,7 +18,7 @@ export default async function DevelopersPage() {
       <Navbar />
       <div className="mx-auto max-w-4xl px-4 py-12">
         <h1 className="text-3xl font-bold">Developer dashboard</h1>
-        <p className="mt-2 text-muted">
+        <p className="mt-2 text-text-secondary">
           Integrate Aria into your own apps with our OpenAI-compatible API.{" "}
           <Link href="/docs" className="font-medium text-accent-strong hover:underline">
             Read the docs →
@@ -26,18 +26,18 @@ export default async function DevelopersPage() {
         </p>
 
         <div className="mt-8 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <p className="text-sm text-muted">Your plan</p>
+          <div className="rounded-2xl border border-border bg-bg-elevated p-5">
+            <p className="text-sm text-text-secondary">Your plan</p>
             <p className="mt-1 text-2xl font-bold">{plan.name}</p>
           </div>
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <p className="text-sm text-muted">API requests / day</p>
+          <div className="rounded-2xl border border-border bg-bg-elevated p-5">
+            <p className="text-sm text-text-secondary">API requests / day</p>
             <p className="mt-1 text-2xl font-bold">
               {plan.apiRequestsPerDay === -1 ? "Unlimited" : plan.apiRequestsPerDay.toLocaleString()}
             </p>
           </div>
-          <div className="rounded-2xl border border-border bg-card p-5">
-            <p className="text-sm text-muted">API keys allowed</p>
+          <div className="rounded-2xl border border-border bg-bg-elevated p-5">
+            <p className="text-sm text-text-secondary">API keys allowed</p>
             <p className="mt-1 text-2xl font-bold">{plan.apiKeysAllowed}</p>
           </div>
         </div>
@@ -56,7 +56,7 @@ export default async function DevelopersPage() {
     ]
   }'`}
           </pre>
-          <p className="mt-3 text-xs text-muted">
+          <p className="mt-3 text-xs text-text-secondary">
             The API is OpenAI-compatible — any OpenAI SDK works by changing the base URL.
           </p>
         </div>

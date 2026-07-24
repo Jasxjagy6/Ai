@@ -1,5 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { MediaCategory, PlanTier } from "@prisma/client";
+import { Tone } from "@/lib/tone";
+import { languageGuidance } from "@/lib/language";
 
 /* ---------------------------------------------------------------------------
  * Relationship stages: the persona's familiarity deepens with message count.
@@ -182,14 +184,20 @@ export function composeSystemPrompt(opts: {
   stage: Stage;
   memories: string[];
   userName?: string | null;
+  tone?: Tone | null;
+  language?: string | null;
 }): string {
-  const { persona, stage, memories, userName } = opts;
+  const { persona, stage, memories, userName, tone, language } = opts;
   const parts = [persona.systemPrompt];
 
   parts.push(
     `\nChat style: ${persona.chatStyle === "mature" ? "composed, warm, fewer abbreviations" : "casual, playful, texts like a young person"}.`
   );
   parts.push(`\nRelationship stage (${stage.name}): ${stage.guidance}`);
+  if (tone && tone.guidance) {
+    parts.push(`\nCurrent vibe the user picked (${tone.label}): ${tone.guidance}`);
+  }
+  if (language) parts.push(languageGuidance(language));
   if (userName) parts.push(`\nThe user's name is ${userName}.`);
   if (memories.length) {
     parts.push(`\nThings you remember about them:\n${memories.map((m) => `- ${m}`).join("\n")}`);

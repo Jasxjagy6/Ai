@@ -81,7 +81,7 @@ export function ApiKeysManager() {
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
-          <button onClick={() => setNewKey(null)} className="mt-3 text-xs text-muted hover:text-text">
+          <button onClick={() => setNewKey(null)} className="mt-3 text-xs text-text-secondary hover:text-text">
             I&apos;ve saved it — dismiss
           </button>
         </div>
@@ -93,7 +93,7 @@ export function ApiKeysManager() {
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && create()}
           placeholder="Key name (e.g. my-telegram-bot)"
-          className="flex-1 rounded-xl border border-border bg-card px-4 py-2.5 text-sm outline-none transition focus:border-accent"
+          className="flex-1 rounded-xl border border-border bg-bg-elevated px-4 py-2.5 text-sm outline-none transition focus:border-accent"
         />
         <button
           onClick={create}
@@ -103,11 +103,11 @@ export function ApiKeysManager() {
           <Plus size={15} /> Create key
         </button>
       </div>
-      {error && <p className="mt-2 text-sm text-rose">{error}</p>}
+      {error && <p className="mt-2 text-sm text-error">{error}</p>}
 
-      <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-card">
+      <div className="mt-4 overflow-hidden rounded-2xl border border-border bg-bg-elevated">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border text-xs uppercase text-muted">
+          <thead className="border-b border-border text-xs uppercase text-text-secondary">
             <tr>
               <th className="px-4 py-3">Name</th>
               <th className="px-4 py-3">Key</th>
@@ -121,16 +121,16 @@ export function ApiKeysManager() {
               <tr key={k.id} className="border-b border-border last:border-0">
                 <td className="px-4 py-3 font-medium">{k.name}</td>
                 <td className="px-4 py-3">
-                  <code className="text-xs text-muted">{k.prefix}</code>
+                  <code className="text-xs text-text-secondary">{k.prefix}</code>
                 </td>
                 <td className="px-4 py-3">{k.requestsWeek.toLocaleString()}</td>
-                <td className="px-4 py-3 text-muted">
+                <td className="px-4 py-3 text-text-secondary">
                   {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "never"}
                 </td>
                 <td className="px-4 py-3 text-right">
                   <button
                     onClick={() => revoke(k.id, k.name)}
-                    className="rounded-lg border border-border p-1.5 text-muted transition hover:text-rose"
+                    className="rounded-lg border border-border p-1.5 text-text-secondary transition hover:text-error"
                   >
                     <Trash2 size={14} />
                   </button>
@@ -139,7 +139,7 @@ export function ApiKeysManager() {
             ))}
             {keys.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-muted">
+                <td colSpan={5} className="px-4 py-8 text-center text-text-secondary">
                   No API keys yet — create your first one above
                 </td>
               </tr>

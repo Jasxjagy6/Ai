@@ -11,6 +11,7 @@ type Persona = {
   age: number;
   systemPrompt: string;
   chatStyle: string;
+  voice?: string;
   minTier: "FREE" | "PLUS" | "PRO";
   isDefault: boolean;
   active: boolean;
@@ -33,6 +34,7 @@ const EMPTY = {
   age: 24,
   systemPrompt: "",
   chatStyle: "youthful",
+  voice: "amy",
   minTier: "FREE" as const,
   isDefault: false,
 };
@@ -153,19 +155,19 @@ export default function AdminPersonasPage() {
               key={p.id}
               onClick={() => select(p)}
               className={`cursor-pointer rounded-xl border p-3 transition ${
-                selected?.id === p.id ? "border-accent bg-accent-soft" : "border-border bg-card hover:border-accent/40"
+                selected?.id === p.id ? "border-accent bg-accent-soft" : "border-border bg-bg-elevated hover:border-accent/40"
               }`}
             >
               <div className="flex items-center justify-between">
                 <p className="font-semibold">
                   {p.name}
                   {p.isDefault && <span className="ml-1.5 text-[10px] text-accent-strong">DEFAULT</span>}
-                  {!p.active && <span className="ml-1.5 text-[10px] text-rose">INACTIVE</span>}
+                  {!p.active && <span className="ml-1.5 text-[10px] text-error">INACTIVE</span>}
                 </p>
-                <span className="text-[10px] font-bold text-muted">{p.minTier}</span>
+                <span className="text-[10px] font-bold text-text-secondary">{p.minTier}</span>
               </div>
-              <p className="mt-0.5 truncate text-xs text-muted">{p.tagline}</p>
-              <p className="mt-1 text-[10px] text-muted">
+              <p className="mt-0.5 truncate text-xs text-text-secondary">{p.tagline}</p>
+              <p className="mt-1 text-[10px] text-text-secondary">
                 {p._count.media} photos · {p._count.conversations} chats · {p._count.memories} memories
               </p>
             </div>
@@ -174,10 +176,10 @@ export default function AdminPersonasPage() {
 
         {/* Editor */}
         {(selected || creating) && (
-          <div className="space-y-4 rounded-2xl border border-border bg-card p-6">
+          <div className="space-y-4 rounded-2xl border border-border bg-bg-elevated p-6">
             <div className="grid gap-4 sm:grid-cols-2">
               <label className="text-sm">
-                <span className="text-muted">Name</span>
+                <span className="text-text-secondary">Name</span>
                 <input
                   value={(draft.name as string) ?? ""}
                   onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
@@ -185,7 +187,7 @@ export default function AdminPersonasPage() {
                 />
               </label>
               <label className="text-sm">
-                <span className="text-muted">Slug {creating ? "" : "(fixed)"}</span>
+                <span className="text-text-secondary">Slug {creating ? "" : "(fixed)"}</span>
                 <input
                   value={(draft.slug as string) ?? ""}
                   disabled={!creating}
@@ -194,7 +196,7 @@ export default function AdminPersonasPage() {
                 />
               </label>
               <label className="text-sm">
-                <span className="text-muted">Tagline</span>
+                <span className="text-text-secondary">Tagline</span>
                 <input
                   value={(draft.tagline as string) ?? ""}
                   onChange={(e) => setDraft((d) => ({ ...d, tagline: e.target.value }))}
@@ -202,7 +204,7 @@ export default function AdminPersonasPage() {
                 />
               </label>
               <label className="text-sm">
-                <span className="text-muted">Age (18+)</span>
+                <span className="text-text-secondary">Age (18+)</span>
                 <input
                   type="number"
                   min={18}
@@ -212,7 +214,7 @@ export default function AdminPersonasPage() {
                 />
               </label>
               <label className="text-sm">
-                <span className="text-muted">Chat style</span>
+                <span className="text-text-secondary">Chat style</span>
                 <select
                   value={(draft.chatStyle as string) ?? "youthful"}
                   onChange={(e) => setDraft((d) => ({ ...d, chatStyle: e.target.value }))}
@@ -223,7 +225,17 @@ export default function AdminPersonasPage() {
                 </select>
               </label>
               <label className="text-sm">
-                <span className="text-muted">Minimum plan</span>
+                <span className="text-text-secondary">Voice (TTS)</span>
+                <select
+                  value={(draft.voice as string) ?? "amy"}
+                  onChange={(e) => setDraft((d) => ({ ...d, voice: e.target.value }))}
+                  className="mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2 outline-none"
+                >
+                  <option value="amy">Amy (warm female)</option>
+                </select>
+              </label>
+              <label className="text-sm">
+                <span className="text-text-secondary">Minimum plan</span>
                 <select
                   value={(draft.minTier as string) ?? "FREE"}
                   onChange={(e) => setDraft((d) => ({ ...d, minTier: e.target.value }))}
@@ -237,7 +249,7 @@ export default function AdminPersonasPage() {
             </div>
 
             <label className="block text-sm">
-              <span className="text-muted">System prompt (personality)</span>
+              <span className="text-text-secondary">System prompt (personality)</span>
               <textarea
                 rows={10}
                 value={(draft.systemPrompt as string) ?? ""}
@@ -277,19 +289,19 @@ export default function AdminPersonasPage() {
               {!creating && selected && (
                 <button
                   onClick={() => remove(selected)}
-                  className="flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-rose"
+                  className="flex items-center gap-2 rounded-xl border border-border px-4 py-2.5 text-sm text-error"
                 >
                   <Trash2 size={14} /> Delete
                 </button>
               )}
-              {msg && <span className="text-sm text-muted">{msg}</span>}
+              {msg && <span className="text-sm text-text-secondary">{msg}</span>}
             </div>
 
             {/* Media vault */}
             {!creating && selected && (
               <div className="border-t border-border pt-5">
                 <h3 className="font-semibold">Photo vault</h3>
-                <p className="mt-1 text-xs text-muted">
+                <p className="mt-1 text-xs text-text-secondary">
                   Photos the persona can send when users ask. Categorized so the AI picks
                   contextually (morning/night/selfie/activity). No repeats per conversation.
                 </p>
@@ -332,7 +344,7 @@ export default function AdminPersonasPage() {
                     </div>
                   ))}
                   {assets.filter((a) => a.active).length === 0 && (
-                    <p className="col-span-full py-6 text-center text-xs text-muted">No photos yet</p>
+                    <p className="col-span-full py-6 text-center text-xs text-text-secondary">No photos yet</p>
                   )}
                 </div>
               </div>

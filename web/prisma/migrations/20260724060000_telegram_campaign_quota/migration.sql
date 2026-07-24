@@ -1,0 +1,3 @@
+ALTER TABLE "TelegramCampaign"
+ADD COLUMN "reservedMessages" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN "quotaSettled" BOOLEAN NOT NULL DEFAULT false;

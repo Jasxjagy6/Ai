@@ -53,8 +53,8 @@ export default function AdminUsersPage() {
     <div>
       <h1 className="text-2xl font-bold">Users</h1>
 
-      <div className="mt-6 flex items-center gap-2 rounded-xl border border-border bg-card px-4 py-2.5">
-        <Search size={16} className="text-muted" />
+      <div className="mt-6 flex items-center gap-2 rounded-xl border border-border bg-bg-elevated px-4 py-2.5">
+        <Search size={16} className="text-text-secondary" />
         <input
           value={q}
           onChange={(e) => {
@@ -64,12 +64,12 @@ export default function AdminUsersPage() {
           placeholder="Search by email or name..."
           className="flex-1 bg-transparent text-sm outline-none"
         />
-        <span className="text-xs text-muted">{total} users</span>
+        <span className="text-xs text-text-secondary">{total} users</span>
       </div>
 
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-border bg-card">
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-border bg-bg-elevated">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border text-xs uppercase text-muted">
+          <thead className="border-b border-border text-xs uppercase text-text-secondary">
             <tr>
               <th className="px-4 py-3">User</th>
               <th className="px-4 py-3">Plan</th>
@@ -91,7 +91,7 @@ export default function AdminUsersPage() {
                       </span>
                     )}
                   </p>
-                  <p className="text-xs text-muted">{u.email}</p>
+                  <p className="text-xs text-text-secondary">{u.email}</p>
                 </td>
                 <td className="px-4 py-3">
                   <select
@@ -105,10 +105,10 @@ export default function AdminUsersPage() {
                   </select>
                 </td>
                 <td className="px-4 py-3">{u._count.conversations}</td>
-                <td className="px-4 py-3 text-muted">{new Date(u.createdAt).toLocaleDateString()}</td>
+                <td className="px-4 py-3 text-text-secondary">{new Date(u.createdAt).toLocaleDateString()}</td>
                 <td className="px-4 py-3">
                   {u.banned ? (
-                    <span className="rounded-full bg-rose/15 px-2 py-0.5 text-xs font-medium text-rose">Banned</span>
+                    <span className="rounded-full bg-error/15 px-2 py-0.5 text-xs font-medium text-error">Banned</span>
                   ) : (
                     <span className="rounded-full bg-green-500/15 px-2 py-0.5 text-xs font-medium text-green-600 dark:text-green-400">
                       Active
@@ -120,21 +120,21 @@ export default function AdminUsersPage() {
                     <button
                       title={u.banned ? "Unban" : "Ban"}
                       onClick={() => patch(u.id, { banned: !u.banned })}
-                      className="rounded-lg border border-border p-1.5 text-muted transition hover:text-rose"
+                      className="rounded-lg border border-border p-1.5 text-text-secondary transition hover:text-error"
                     >
                       {u.banned ? <UserCheck size={14} /> : <Ban size={14} />}
                     </button>
                     <button
                       title={u.role === "ADMIN" ? "Demote to user" : "Promote to admin"}
                       onClick={() => patch(u.id, { role: u.role === "ADMIN" ? "USER" : "ADMIN" })}
-                      className="rounded-lg border border-border p-1.5 text-muted transition hover:text-accent"
+                      className="rounded-lg border border-border p-1.5 text-text-secondary transition hover:text-accent"
                     >
                       <ShieldCheck size={14} />
                     </button>
                     <button
                       title="Delete user"
                       onClick={() => remove(u.id, u.email)}
-                      className="rounded-lg border border-border p-1.5 text-muted transition hover:text-rose"
+                      className="rounded-lg border border-border p-1.5 text-text-secondary transition hover:text-error"
                     >
                       <Trash2 size={14} />
                     </button>
@@ -144,7 +144,7 @@ export default function AdminUsersPage() {
             ))}
             {users.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-4 py-8 text-center text-muted">
+                <td colSpan={6} className="px-4 py-8 text-center text-text-secondary">
                   No users found
                 </td>
               </tr>
@@ -162,7 +162,7 @@ export default function AdminUsersPage() {
           >
             Previous
           </button>
-          <span className="text-muted">
+          <span className="text-text-secondary">
             Page {page} of {Math.ceil(total / perPage)}
           </span>
           <button

@@ -14,6 +14,14 @@ const DEFAULTS: Record<string, string> = {
   plans_json: "",
   trial_days: "0",
   trial_tier: "PLUS",
+  validator_plans_json: "",
+  // Voice notes (Piper TTS microservice)
+  tts_url: process.env.TTS_URL ?? "http://localhost:11435",
+  voice_enabled: "true",
+  voice_auto_reply: "true", // Aria voice-replies when the user sends a voice-style ask
+  // Vision (moondream via Ollama)
+  vision_enabled: "true",
+  vision_model: process.env.VISION_MODEL ?? "moondream",
 };
 
 export async function getSetting(key: string): Promise<string> {

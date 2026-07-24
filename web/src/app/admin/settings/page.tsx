@@ -15,6 +15,10 @@ const FIELDS: Array<{
   { key: "temperature", label: "Temperature", hint: "0.1 = focused, 1.2 = wild. Default 0.9.", type: "text" },
   { key: "max_history_messages", label: "History window", hint: "How many past messages Aria sees per reply. Higher = more memory, slower.", type: "text" },
   { key: "maintenance_mode", label: "Maintenance mode", hint: "When on, chat returns a friendly 'be right back' message to all users.", type: "toggle" },
+  { key: "voice_enabled", label: "Voice notes", hint: "Let companions reply with spoken voice notes (Piper TTS microservice).", type: "toggle" },
+  { key: "tts_url", label: "TTS service URL", hint: "Piper TTS microservice address (default http://localhost:11435).", type: "text" },
+  { key: "vision_enabled", label: "Vision (photo understanding)", hint: "Let users send photos that the companion can 'see' and react to.", type: "toggle" },
+  { key: "vision_model", label: "Vision model", hint: "Ollama vision model used to caption user photos (e.g. moondream, llava).", type: "text" },
 ];
 
 export default function AdminSettingsPage() {
@@ -44,20 +48,20 @@ export default function AdminSettingsPage() {
     }
   }
 
-  if (loading) return <p className="text-muted">Loading settings...</p>;
+  if (loading) return <p className="text-text-secondary">Loading settings...</p>;
 
   return (
     <div className="max-w-2xl">
       <h1 className="text-2xl font-bold">AI &amp; Settings</h1>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 text-sm text-text-secondary">
         Changes apply immediately to all new messages — no redeploy needed.
       </p>
 
       <div className="mt-8 space-y-6">
         {FIELDS.map((f) => (
-          <div key={f.key} className="rounded-2xl border border-border bg-card p-5">
+          <div key={f.key} className="rounded-2xl border border-border bg-bg-elevated p-5">
             <label className="font-medium">{f.label}</label>
-            <p className="mb-3 mt-0.5 text-xs text-muted">{f.hint}</p>
+            <p className="mb-3 mt-0.5 text-xs text-text-secondary">{f.hint}</p>
             {f.type === "textarea" ? (
               <textarea
                 value={settings[f.key] ?? ""}

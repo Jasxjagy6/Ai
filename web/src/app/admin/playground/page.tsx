@@ -76,16 +76,16 @@ export default function PlaygroundPage() {
   return (
     <div>
       <h1 className="text-2xl font-bold">Playground</h1>
-      <p className="mt-1 text-sm text-muted">
+      <p className="mt-1 text-sm text-text-secondary">
         Test persona prompts against any relationship stage and memory set — nothing here touches
         user data.
       </p>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-[380px_1fr]">
         {/* Config */}
-        <div className="space-y-4 rounded-2xl border border-border bg-card p-5 text-sm">
+        <div className="space-y-4 rounded-2xl border border-border bg-bg-elevated p-5 text-sm">
           <label className="block">
-            <span className="text-muted">Persona name</span>
+            <span className="text-text-secondary">Persona name</span>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -93,7 +93,7 @@ export default function PlaygroundPage() {
             />
           </label>
           <label className="block">
-            <span className="text-muted">System prompt</span>
+            <span className="text-text-secondary">System prompt</span>
             <textarea
               rows={8}
               value={systemPrompt}
@@ -103,7 +103,7 @@ export default function PlaygroundPage() {
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="text-muted">Chat style</span>
+              <span className="text-text-secondary">Chat style</span>
               <select
                 value={chatStyle}
                 onChange={(e) => setChatStyle(e.target.value)}
@@ -114,7 +114,7 @@ export default function PlaygroundPage() {
               </select>
             </label>
             <label className="block">
-              <span className="text-muted">Simulated history (msgs)</span>
+              <span className="text-text-secondary">Simulated history (msgs)</span>
               <input
                 type="number"
                 min={0}
@@ -125,7 +125,7 @@ export default function PlaygroundPage() {
             </label>
           </div>
           <label className="block">
-            <span className="text-muted">Simulated memories (one per line)</span>
+            <span className="text-text-secondary">Simulated memories (one per line)</span>
             <textarea
               rows={4}
               value={memories}
@@ -140,7 +140,7 @@ export default function PlaygroundPage() {
             </span>
             <button
               onClick={() => setMessages([])}
-              className="flex items-center gap-1.5 text-xs text-muted hover:text-text"
+              className="flex items-center gap-1.5 text-xs text-text-secondary hover:text-text"
             >
               <RotateCcw size={12} /> Reset chat
             </button>
@@ -148,10 +148,10 @@ export default function PlaygroundPage() {
         </div>
 
         {/* Chat */}
-        <div className="flex h-[560px] flex-col rounded-2xl border border-border bg-card">
+        <div className="flex h-[560px] flex-col rounded-2xl border border-border bg-bg-elevated">
           <div className="flex-1 space-y-3 overflow-y-auto p-4">
             {messages.length === 0 && (
-              <p className="mt-16 text-center text-sm text-muted">
+              <p className="mt-16 text-center text-sm text-text-secondary">
                 Configure the persona on the left, then chat to test it
               </p>
             )}

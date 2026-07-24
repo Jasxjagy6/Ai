@@ -5,15 +5,21 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   CreditCard, LayoutDashboard, Menu, Settings, Sparkles, Users, Wand2, X,
+  BarChart3, KeyRound, MessagesSquare, Newspaper, BadgeDollarSign,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AriaAvatar } from "@/components/aria-avatar";
 
 const NAV = [
   { href: "/admin", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
+  { href: "/admin/conversations", label: "Conversations", icon: MessagesSquare },
   { href: "/admin/users", label: "Users", icon: Users },
+  { href: "/admin/validator-keys", label: "Validator Keys", icon: KeyRound },
+  { href: "/admin/validator-plans", label: "Validator Plans", icon: BadgeDollarSign },
   { href: "/admin/personas", label: "Personas", icon: Sparkles },
   { href: "/admin/plans", label: "Plans & Billing", icon: CreditCard },
+  { href: "/admin/changelog", label: "Changelog", icon: Newspaper },
   { href: "/admin/playground", label: "Playground", icon: Wand2 },
   { href: "/admin/settings", label: "AI & Settings", icon: Settings },
 ];
@@ -58,7 +64,7 @@ export function AdminShell({
               className={`flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm transition ${
                 active
                   ? "bg-accent-soft font-medium text-accent-strong"
-                  : "text-muted hover:bg-card hover:text-text"
+                  : "text-text-secondary hover:bg-bg-elevated hover:text-text"
               }`}
             >
               <item.icon size={16} />
@@ -68,7 +74,7 @@ export function AdminShell({
         })}
       </nav>
       <div className="flex items-center justify-between gap-2 border-t border-border p-4">
-        <span className="truncate text-xs text-muted">{adminEmail}</span>
+        <span className="truncate text-xs text-text-secondary">{adminEmail}</span>
         <ThemeToggle />
       </div>
     </>
@@ -89,7 +95,7 @@ export function AdminShell({
             <button
               onClick={() => setOpen(false)}
               aria-label="Close menu"
-              className="absolute right-3 top-4 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-muted"
+              className="absolute right-3 top-4 flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-elevated text-text-secondary"
             >
               <X size={16} />
             </button>
@@ -105,7 +111,7 @@ export function AdminShell({
           <button
             onClick={() => setOpen(true)}
             aria-label="Open menu"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-bg-elevated"
           >
             <Menu size={16} />
           </button>

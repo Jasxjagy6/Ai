@@ -31,7 +31,7 @@ export default function AdminDashboard() {
       .catch(() => {});
   }, []);
 
-  if (!stats) return <p className="text-muted">Loading dashboard...</p>;
+  if (!stats) return <p className="text-text-secondary">Loading dashboard...</p>;
 
   const cards = [
     { label: "Total users", value: stats.totalUsers, sub: `+${stats.newUsersWeek} this week`, icon: Users },
@@ -51,21 +51,21 @@ export default function AdminDashboard() {
       <h1 className="text-2xl font-bold">Dashboard</h1>
       <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {cards.map((c) => (
-          <div key={c.label} className="rounded-2xl border border-border bg-card p-5">
+          <div key={c.label} className="rounded-2xl border border-border bg-bg-elevated p-5">
             <div className="flex items-center justify-between">
-              <p className="text-sm text-muted">{c.label}</p>
+              <p className="text-sm text-text-secondary">{c.label}</p>
               <c.icon size={16} className="text-accent" />
             </div>
             <p className="mt-2 text-3xl font-bold">{c.value}</p>
-            <p className="mt-1 text-xs text-muted">{c.sub}</p>
+            <p className="mt-1 text-xs text-text-secondary">{c.sub}</p>
           </div>
         ))}
       </div>
 
       <h2 className="mt-10 text-lg font-semibold">Recent payments</h2>
-      <div className="mt-4 overflow-x-auto rounded-2xl border border-border bg-card">
+      <div className="mt-4 overflow-x-auto rounded-2xl border border-border bg-bg-elevated">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-border text-xs uppercase text-muted">
+          <thead className="border-b border-border text-xs uppercase text-text-secondary">
             <tr>
               <th className="px-4 py-3">User</th>
               <th className="px-4 py-3">Plan</th>
@@ -90,18 +90,18 @@ export default function AdminDashboard() {
                         ? "bg-green-500/15 text-green-600 dark:text-green-400"
                         : p.status === "CREATED"
                           ? "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400"
-                          : "bg-rose/15 text-rose"
+                          : "bg-error/15 text-error"
                     }`}
                   >
                     {p.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-muted">{new Date(p.createdAt).toLocaleString()}</td>
+                <td className="px-4 py-3 text-text-secondary">{new Date(p.createdAt).toLocaleString()}</td>
               </tr>
             ))}
             {stats.recentPayments.length === 0 && (
               <tr>
-                <td colSpan={5} className="px-4 py-8 text-center text-muted">
+                <td colSpan={5} className="px-4 py-8 text-center text-text-secondary">
                   No payments yet
                 </td>
               </tr>

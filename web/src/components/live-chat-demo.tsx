@@ -6,20 +6,16 @@ import { AriaAvatar } from "@/components/aria-avatar";
 type DemoMsg = { from: "user" | "aria"; text: string };
 
 const SCRIPT: DemoMsg[] = [
-  { from: "user", text: "rough day. my presentation got torn apart 😩" },
-  { from: "aria", text: "nooo 😞 after how hard you worked on it?? come here. tell me everything" },
+  { from: "user", text: "rough day. my presentation got torn apart" },
+  { from: "aria", text: "nooo after how hard you worked on it?? come here. tell me everything" },
   { from: "user", text: "feels like nothing i do lands lately" },
   { from: "aria", text: "hey. one bad meeting doesn't erase how good you are. remember the client pitch you nailed last month? that was ALL you" },
   { from: "user", text: "how do you even remember that lol" },
-  { from: "aria", text: "because i pay attention when you talk, obviously 😌 now go eat something, you get grumpy when you're hungry" },
-  { from: "user", text: "…you're not wrong 😅" },
-  { from: "aria", text: "i'm never wrong. it's my best and most annoying quality 💜" },
+  { from: "aria", text: "because i pay attention when you talk, obviously now go eat something, you get grumpy when you're hungry" },
+  { from: "user", text: "you're not wrong" },
+  { from: "aria", text: "i'm never wrong. it's my best and most annoying quality" },
 ];
 
-/**
- * Animated conversation that plays like a video: messages appear one by
- * one, Aria "types" before replying, then the loop restarts.
- */
 export function LiveChatDemo() {
   const [visible, setVisible] = useState<DemoMsg[]>([]);
   const [typing, setTyping] = useState(false);
@@ -36,7 +32,6 @@ export function LiveChatDemo() {
 
     function playFrom(index: number) {
       if (index >= SCRIPT.length) {
-        // hold the finished conversation, then restart
         schedule(() => {
           setVisible([]);
           playFrom(0);
@@ -72,20 +67,18 @@ export function LiveChatDemo() {
   }, [visible, typing]);
 
   return (
-    <div className="mx-auto w-full max-w-sm rounded-[1.75rem] border border-border bg-card p-4 shadow-2xl shadow-accent/10 sm:max-w-md">
-      {/* header */}
+    <div className="mx-auto w-full max-w-sm rounded-2xl border border-border bg-bg-elevated p-4 shadow-2xl shadow-accent/5 transition-all duration-300 hover:shadow-accent/10 sm:max-w-md">
       <div className="flex items-center gap-3 border-b border-border pb-3">
         <AriaAvatar size={40} online />
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold leading-tight">Aria</p>
-          <p className="text-[11px] text-muted">AI companion · online now</p>
+          <p className="text-[11px] text-text-secondary">AI companion</p>
         </div>
-        <span className="ml-auto rounded-full bg-accent-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent-strong">
+        <span className="ml-auto rounded-lg bg-accent-soft px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-accent">
           Live demo
         </span>
       </div>
 
-      {/* messages */}
       <div ref={scrollRef} className="h-[320px] space-y-2.5 overflow-y-auto py-3 sm:h-[360px]">
         {visible.map((m, i) => (
           <div
@@ -95,8 +88,8 @@ export function LiveChatDemo() {
           >
             {m.from === "aria" && <AriaAvatar size={22} />}
             <div
-              className={`max-w-[80%] rounded-2xl px-3.5 py-2 text-[13px] leading-snug ${
-                m.from === "user" ? "bubble-user rounded-br-md" : "bubble-ai rounded-bl-md"
+              className={`max-w-[80%] rounded-3xl px-3.5 py-2 text-[13px] leading-snug ${
+                m.from === "user" ? "bubble-user rounded-tr-md" : "bubble-ai rounded-tl-md"
               }`}
             >
               {m.text}
@@ -104,23 +97,22 @@ export function LiveChatDemo() {
           </div>
         ))}
         {typing && (
-          <div className="flex items-end gap-1.5">
+          <div className="flex items-end gap-1.5" style={{ animation: "msg-in 0.2s ease-out" }}>
             <AriaAvatar size={22} />
-            <div className="bubble-ai flex gap-1 rounded-2xl rounded-bl-md px-3.5 py-2.5">
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" />
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" />
-              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" />
+            <div className="bubble-ai flex gap-1 rounded-3xl rounded-tl-md px-3.5 py-2.5">
+              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-text-secondary" />
+              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-text-secondary" />
+              <span className="typing-dot h-1.5 w-1.5 rounded-full bg-text-secondary" />
             </div>
           </div>
         )}
       </div>
 
-      {/* fake composer */}
       <div className="flex items-center gap-2 border-t border-border pt-3">
-        <div className="flex-1 rounded-full border border-border bg-bg px-4 py-2 text-[13px] text-muted">
-          Message Aria…
+        <div className="flex-1 rounded-xl border border-border bg-bg px-4 py-2 text-[13px] text-text-secondary">
+          Message Aria
         </div>
-        <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-strong text-white">
+        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent-strong text-white transition-all duration-200 hover:opacity-90">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="m22 2-7 20-4-9-9-4Z" />
             <path d="M22 2 11 13" />

@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: aria
+      POSTGRES_PASSWORD: aria_dev_2026
+      POSTGRES_DB: aria_db
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aria -d aria_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    network_mode: host
+    env_file:
+      - ./web/.env
+    environment:
+      DATABASE_URL: postgresql://aria:aria_dev_2026@localhost:5433/aria_db
+      HOSTNAME: 0.0.0.0
+      AUTH_SECRET: ${AUTH_SECRET:-dev-secret-change-in-production}
+      AUTH_TRUST_HOST: "true"
+      NEXTAUTH_URL: http://localhost:3000
+      OLLAMA_URL: http://localhost:11434
+      AI_MODEL: aria
+      ADMIN_EMAIL: admin@aria.chat
+      PAYMENT_PROVIDER: razorpay
+    volumes:
+      - ./web/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  telegram-worker:
+    build:
+      context: ./telegram-worker
+      dockerfile: Dockerfile
+    env_file:
+      - ./web/.env
+    environment:
+      DATABASE_URL: postgresql://aria:aria_dev_2026@postgres:5432/aria_db
+      AUTH_SECRET: ${AUTH_SECRET:-dev-secret-change-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:

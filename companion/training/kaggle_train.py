@@ -1,53 +1,47 @@
-# Kaggle Notebook: QLoRA fine-tune Hermes-3-Llama-3.1-8B for companion chat
-# =========================================================================
+# Kaggle Notebook: Fast QLoRA fine-tune Hermes-3-Llama-3.1-8B for companion chat
+# =============================================================================
 # Setup on Kaggle:
-#   1. New Notebook -> Settings -> Accelerator: GPU T4 x2
-#      (unsloth uses 1 GPU; T4 x2 works fine, P100 also OK)
-#   2. Settings -> Internet: ON (needed to download the base model)
-#   3. Add your dataset: Upload train.jsonl + eval.jsonl as a Kaggle Dataset
-#      named "companion-chat-data", then "+ Add Input" it to the notebook.
-#   4. Paste each CELL below into its own notebook cell. Run All.
-#   5. Runtime: roughly 4-6 hours for 1 epoch on ~60-80K conversations.
-#      Checkpoints save to /kaggle/working every 200 steps — if the session
-#      dies, re-run with resume_from_checkpoint=True in the trainer cell.
-#   6. When done, download /kaggle/working/aria-8b-q4_k_m.gguf from the
-#      notebook Output tab and upload it to the VPS.
+#   1. New Notebook -> Accelerator: GPU T4 x2, Internet: ON
+#   2. Add Input -> your "companion-chat-data" dataset (train.jsonl + eval.jsonl)
+#   3. Paste each CELL below as its own notebook cell. Run All.
+#   4. Expected runtime: ~4-6 hours (all 67K conversations, 1 epoch, pack=2048)
+#   5. Download /kaggle/working/aria-8b-q4_k_m.gguf from Output tab
 
-# %% [CELL 1] Install dependencies (~3 min)
-# unsloth: fastest QLoRA on T4, handles 4-bit load + LoRA + GGUF export
+# %% [CELL 1] Install dependencies
 !pip install -q unsloth
 !pip install -q --no-deps trl peft accelerate bitsandbytes
 
-# %% [CELL 2] Load base model in 4-bit
+# %% [CELL 2] Load model with packing-optimized settings
 from unsloth import FastLanguageModel
 import torch
 
-MAX_SEQ_LEN = 4096  # T4 16GB: 4096 fits with 4-bit + gradient checkpointing
+# 2048 is enough for most convos; packing multiplies throughput since
+# SFTTrainer concatenates all texts and splits into 2048-token chunks.
+MAX_SEQ_LEN = 2048
 
 model, tokenizer = FastLanguageModel.from_pretrained(
     model_name="NousResearch/Hermes-3-Llama-3.1-8B",
     max_seq_length=MAX_SEQ_LEN,
-    dtype=None,          # auto: float16 on T4
+    dtype=None,
     load_in_4bit=True,
 )
 
 model = FastLanguageModel.get_peft_model(
     model,
-    r=16,                # LoRA rank — 16 is the sweet spot for style transfer
-    lora_alpha=32,
-    lora_dropout=0,      # 0 = enables unsloth fast path
+    r=8,                      # r=8 vs 16: ~40% less LoRA compute, minimal quality diff
+    lora_alpha=16,
+    lora_dropout=0,
     target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
                     "gate_proj", "up_proj", "down_proj"],
     use_gradient_checkpointing="unsloth",
     random_state=42,
 )
 
-# %% [CELL 3] Load and format the dataset
+# %% [CELL 3] Load and pack dataset
 import json
 from datasets import Dataset
 
-DATA_DIR = "/kaggle/input/companion-chat-data"
-
+DATA_DIR = "/kaggle/input/datasets/jagygamers/companion-chat-data"
 ROLE_MAP = {"system": "system", "human": "user", "gpt": "assistant"}
 
 def load_jsonl(path):
@@ -77,54 +71,52 @@ train_ds = Dataset.from_list(train_rows).map(formatting, batched=True,
 eval_ds = Dataset.from_list(eval_rows).map(formatting, batched=True,
                                            remove_columns=["messages"])
 
-# %% [CELL 4] Train
+# %% [CELL 4] Train with packing (fast!)
 from trl import SFTTrainer, SFTConfig
 
 trainer = SFTTrainer(
     model=model,
     tokenizer=tokenizer,
     train_dataset=train_ds,
-    eval_dataset=eval_ds.select(range(min(200, len(eval_ds)))),
+    eval_dataset=eval_ds,
     dataset_text_field="text",
     max_seq_length=MAX_SEQ_LEN,
+    packing=True,                     # <-- the BIG speedup: concatenates + chunks
     args=SFTConfig(
         output_dir="/kaggle/working/checkpoints",
-        per_device_train_batch_size=2,
-        gradient_accumulation_steps=8,   # effective batch 16
+        per_device_train_batch_size=4,    # more since seq=2048 not 4096
+        gradient_accumulation_steps=4,    # effective batch 16
         num_train_epochs=1,
-        learning_rate=2e-4,
+        learning_rate=3e-4,               # slightly higher for fewer steps
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        warmup_ratio=0.05,
         logging_steps=20,
-        save_steps=200,
-        save_total_limit=2,              # keep disk under Kaggle's 20GB cap
+        save_steps=500,
+        save_total_limit=2,
         eval_strategy="steps",
-        eval_steps=400,
-        bf16=False, fp16=True,           # T4 has no bf16
+        eval_steps=500,
+        bf16=False, fp16=True,
         optim="adamw_8bit",
         seed=42,
         report_to="none",
+        dataloader_num_workers=2,
     ),
 )
 
-# To resume after a dead session, use:
-# trainer.train(resume_from_checkpoint=True)
 trainer.train()
 
-# %% [CELL 5] Export merged GGUF for Ollama (~20-30 min)
-# Merges LoRA into the base model and quantizes to q4_k_m in one step.
+# %% [CELL 5] Export merged GGUF for Ollama (~20 min)
 model.save_pretrained_gguf(
     "/kaggle/working/aria-8b",
     tokenizer,
     quantization_method="q4_k_m",
 )
-# Output: /kaggle/working/aria-8b/unsloth.Q4_K_M.gguf (~4.9 GB)
-# Download it from the notebook's Output tab.
+# Output: /kaggle/working/aria-8b/unsloth.Q4_K_M.gguf
 
-# %% [CELL 6] Quick smoke test of the fine-tuned model
+# %% [CELL 6] Quick smoke test
 FastLanguageModel.for_inference(model)
 msgs = [
-    {"role": "system", "content": "You are Aria, a warm, playful, flirty AI companion. You text casually like a real person."},
+    {"role": "system", "content": "You are Aria, a warm, playful, flirty AI companion."},
     {"role": "user", "content": "heyy whats up"},
 ]
 inputs = tokenizer.apply_chat_template(msgs, tokenize=True,

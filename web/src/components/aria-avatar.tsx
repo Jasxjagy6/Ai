@@ -21,7 +21,7 @@ export function AriaAvatar({
       />
       {online && (
         <span
-          className="absolute rounded-full border-2 border-bg bg-green-500"
+          className="absolute rounded-full border-2 border-bg bg-success"
           style={{
             width: Math.max(10, size * 0.28),
             height: Math.max(10, size * 0.28),

@@ -1,0 +1,12 @@
+node_modules
+.next
+.env
+.env.local
+.env.production
+.git
+.gitignore
+README.md
+AGENTS.md
+CLAUDE.md
+uploads
+node_modules/.cache

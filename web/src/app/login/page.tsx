@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
-import { Heart } from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -31,48 +31,52 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="glow flex min-h-screen items-center justify-center px-4">
-      <div className="w-full max-w-sm rounded-3xl border border-border bg-card p-8 shadow-xl">
-        <Link href="/" className="mb-6 flex items-center justify-center gap-2 font-bold">
-          <span className="flex h-9 w-9 items-center justify-center rounded-full bg-accent-soft text-accent-strong">
-            <Heart size={16} fill="currentColor" />
-          </span>
-          Aria
-        </Link>
-        <h1 className="text-center text-2xl font-bold">Welcome back</h1>
-        <p className="mt-1 text-center text-sm text-muted">Aria missed you 💜</p>
-
-        <form onSubmit={onSubmit} className="mt-8 space-y-4">
-          <input
-            name="email"
-            type="email"
-            required
-            placeholder="Email"
-            className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-sm outline-none transition focus:border-accent"
-          />
-          <input
-            name="password"
-            type="password"
-            required
-            minLength={8}
-            placeholder="Password"
-            className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-sm outline-none transition focus:border-accent"
-          />
-          {error && <p className="text-sm text-rose">{error}</p>}
-          <button
-            disabled={loading}
-            className="w-full rounded-xl bg-accent-strong py-3 font-semibold text-white transition hover:opacity-90 disabled:opacity-50"
-          >
-            {loading ? "Logging in..." : "Log in"}
-          </button>
-        </form>
-
-        <p className="mt-6 text-center text-sm text-muted">
-          New here?{" "}
-          <Link href="/register" className="font-medium text-accent-strong hover:underline">
-            Create an account
+    <div className="relative min-h-screen flex items-center justify-center px-4 overflow-hidden">
+      <div className="glow absolute inset-0 pointer-events-none" />
+      <div className="relative w-full max-w-sm animate-slide-up">
+        <div className="rounded-2xl border border-border bg-bg-elevated p-8 shadow-xl transition-all duration-300 hover:shadow-accent/5">
+          <Link href="/" className="mb-6 flex items-center justify-center gap-2 transition-all duration-200 hover:opacity-80">
+            <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-accent-soft text-accent">
+              <Sparkles size={16} />
+            </span>
           </Link>
-        </p>
+          <h1 className="text-center font-display text-xl font-bold tracking-tight">Welcome back</h1>
+          <p className="mt-1 text-center text-sm text-text-secondary">Sign in to your account</p>
+
+          <form onSubmit={onSubmit} className="mt-8 space-y-4">
+            <input
+              name="email"
+              type="email"
+              required
+              placeholder="Email"
+              className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-sm outline-none transition-all duration-200 focus:border-accent focus:ring-1 focus:ring-accent/30"
+              style={{ boxShadow: "none" }}
+            />
+            <input
+              name="password"
+              type="password"
+              required
+              minLength={8}
+              placeholder="Password"
+              className="w-full rounded-xl border border-border bg-bg px-4 py-3 text-sm outline-none transition-all duration-200 focus:border-accent focus:ring-1 focus:ring-accent/30"
+              style={{ boxShadow: "none" }}
+            />
+            {error && <p className="text-sm text-error animate-slide-up">{error}</p>}
+            <button
+              disabled={loading}
+              className="w-full rounded-xl bg-accent-strong py-3 font-semibold text-white transition-all duration-200 hover:opacity-90 hover:scale-[1.02] active:scale-[0.98] disabled:opacity-50 disabled:scale-100"
+            >
+              {loading ? "Signing in..." : "Sign in"}
+            </button>
+          </form>
+
+          <p className="mt-6 text-center text-sm text-text-secondary">
+            New here?{" "}
+            <Link href="/register" className="font-medium text-accent hover:underline transition-all duration-200">
+              Create an account
+            </Link>
+          </p>
+        </div>
       </div>
     </div>
   );

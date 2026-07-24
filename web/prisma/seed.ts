@@ -13,6 +13,7 @@ const PERSONAS = [
     tagline: "Playful, warm, a little sassy — your day-one companion",
     age: 24,
     chatStyle: "youthful",
+    voice: "amy",
     minTier: "FREE" as const,
     isDefault: true,
     avatarUrl: "/aria/avatar.svg",
@@ -37,6 +38,7 @@ Important rules:
     tagline: "Calm, thoughtful, deep talks at 2am — Plus exclusive",
     age: 27,
     chatStyle: "mature",
+    voice: "amy",
     minTier: "PLUS" as const,
     isDefault: false,
     avatarUrl: "/aria/avatar.svg",
@@ -60,6 +62,7 @@ Important rules:
     tagline: "Chaotic gamer energy, memes, zero chill — Pro exclusive",
     age: 22,
     chatStyle: "youthful",
+    voice: "amy",
     minTier: "PRO" as const,
     isDefault: false,
     avatarUrl: "/aria/avatar.svg",
@@ -88,12 +91,28 @@ async function main() {
         tagline: p.tagline,
         age: p.age,
         chatStyle: p.chatStyle,
+        voice: p.voice,
         minTier: p.minTier,
         systemPrompt: p.systemPrompt,
       },
       create: p,
     });
     console.log(`seeded persona: ${p.name} (${p.minTier})`);
+  }
+
+  // Seed a few changelog entries the first time (only if empty).
+  const changelogCount = await prisma.changelog.count();
+  if (changelogCount === 0) {
+    const entries = [
+      { title: "Aria can speak now 🎙️", tag: "New", body: "Ask for a voice note or tap 'Play voice' on any message — Aria replies in her own warm voice." },
+      { title: "She can see your photos 👀", tag: "New", body: "Send a picture in chat and Aria will actually look at it and react — your dog, your dinner, the view from your window." },
+      { title: "Pick a vibe & a language 🌍", tag: "New", body: "Shift the mood between funny, flirty, deep and more — and chat in English, Spanish, Hindi, French and other languages." },
+      { title: "Faster, smoother chats", tag: "Improved", body: "Streaming replies and history loading are quicker across the board." },
+    ];
+    for (const e of entries) {
+      await prisma.changelog.create({ data: e });
+    }
+    console.log(`seeded ${entries.length} changelog entries`);
   }
 }
 

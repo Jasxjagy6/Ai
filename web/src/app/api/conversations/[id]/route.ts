@@ -13,7 +13,10 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
       persona: { select: { id: true, name: true, avatarUrl: true } },
       messages: {
         orderBy: { createdAt: "asc" },
-        select: { id: true, role: true, content: true, mediaId: true, createdAt: true },
+        select: {
+          id: true, role: true, content: true, mediaId: true,
+          kind: true, audioPath: true, imagePath: true, createdAt: true,
+        },
       },
     },
   });

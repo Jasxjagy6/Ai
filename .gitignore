@@ -1,0 +1,3 @@
+companion/data/processed/train.jsonl
+__pycache__/
+*.py[cod]

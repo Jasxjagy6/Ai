@@ -42,10 +42,10 @@ export default function DocsPage() {
       <div className="mx-auto flex max-w-6xl gap-10 px-4 py-12">
         {/* TOC */}
         <aside className="sticky top-24 hidden h-fit w-52 shrink-0 lg:block">
-          <p className="mb-3 text-xs font-semibold uppercase text-muted">API Reference</p>
+          <p className="mb-3 text-xs font-semibold uppercase text-text-secondary">API Reference</p>
           <nav className="space-y-1.5 text-sm">
             {SECTIONS.map((s) => (
-              <a key={s.id} href={`#${s.id}`} className="block text-muted transition hover:text-text">
+              <a key={s.id} href={`#${s.id}`} className="block text-text-secondary transition hover:text-text">
                 {s.label}
               </a>
             ))}
@@ -53,7 +53,7 @@ export default function DocsPage() {
         </aside>
 
         {/* Content */}
-        <article className="min-w-0 flex-1 [&_h2]:mt-14 [&_h2]:text-2xl [&_h2]:font-bold [&_h3]:mt-8 [&_h3]:font-semibold [&_p]:mt-3 [&_p]:leading-relaxed [&_p]:text-muted [&_table]:mt-4 [&_td]:border-t [&_td]:border-border [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left">
+        <article className="min-w-0 flex-1 [&_h2]:mt-14 [&_h2]:text-2xl [&_h2]:font-bold [&_h3]:mt-8 [&_h3]:font-semibold [&_p]:mt-3 [&_p]:leading-relaxed [&_p]:text-text-secondary [&_table]:mt-4 [&_td]:border-t [&_td]:border-border [&_td]:px-3 [&_td]:py-2 [&_th]:px-3 [&_th]:py-2 [&_th]:text-left">
           <h1 className="text-4xl font-extrabold">Aria API</h1>
           <p className="mt-3 max-w-xl text-lg">
             Add Aria&apos;s warm, human-like conversation to your own apps. The API is{" "}
@@ -91,7 +91,7 @@ export default function DocsPage() {
           <p>Generates Aria&apos;s reply for a conversation.</p>
           <h3>Request body</h3>
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase text-muted">
+            <thead className="text-xs uppercase text-text-secondary">
               <tr><th>Field</th><th>Type</th><th>Description</th></tr>
             </thead>
             <tbody>
@@ -146,7 +146,7 @@ data: [DONE]`}</Code>
 
           <h2 id="rate-limits">Rate limits</h2>
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase text-muted">
+            <thead className="text-xs uppercase text-text-secondary">
               <tr><th>Plan</th><th>API requests / day</th><th>API keys</th></tr>
             </thead>
             <tbody>
@@ -163,7 +163,7 @@ data: [DONE]`}</Code>
 
           <h2 id="errors">Errors</h2>
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase text-muted">
+            <thead className="text-xs uppercase text-text-secondary">
               <tr><th>Status</th><th>Type</th><th>Meaning</th></tr>
             </thead>
             <tbody>
@@ -226,7 +226,7 @@ while (true) {
   }
 }`}</Code>
 
-          <div className="mt-16 rounded-2xl border border-border bg-bg-soft p-6 text-sm text-muted">
+          <div className="mt-16 rounded-2xl border border-border bg-bg-soft p-6 text-sm text-text-secondary">
             <strong className="text-text">Responsible use:</strong> apps built on the Aria API must
             disclose to their users that responses are AI-generated. Don&apos;t use the API to
             impersonate real people or deceive users into believing they&apos;re talking to a human.

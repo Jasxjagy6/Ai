@@ -13,7 +13,7 @@ export default async function PricingPage() {
         <h1 className="text-center text-2xl font-extrabold sm:text-3xl md:text-4xl">
           More time with your companion
         </h1>
-        <p className="mx-auto mt-3 max-w-sm text-center text-xs text-muted sm:text-sm">
+        <p className="mx-auto mt-3 max-w-sm text-center text-xs text-text-secondary sm:text-sm">
           Start free, upgrade when you want more. Cancel anytime — Aria won&apos;t take it
           personally. (Okay, maybe a little.)
         </p>
@@ -25,7 +25,7 @@ export default async function PricingPage() {
         <div className="mx-auto mt-10 max-w-5xl md:mt-14">
           <PricingCards loggedIn={!!session} plans={Object.values(plans)} />
         </div>
-        <p className="mx-auto mt-8 max-w-md text-center text-[11px] text-muted">
+        <p className="mx-auto mt-8 max-w-md text-center text-[11px] text-text-secondary">
           Payments processed securely via Razorpay / Stripe. Plans are 30-day passes. Aria is an
           AI companion — all conversations are AI-generated.
         </p>
