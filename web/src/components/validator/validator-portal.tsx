@@ -8,6 +8,8 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  BadgeDollarSign,
+  Bell,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -15,11 +17,14 @@ import {
   ChevronRight,
   CircleStop,
   CloudUpload,
+  Coins,
+  Copy,
   Database,
   Download,
   FileJson,
   FileText,
   Fingerprint,
+  Gift,
   Gauge,
   GitMerge,
   Globe,
@@ -31,12 +36,14 @@ import {
   LockKeyhole,
   LogOut,
   Menu,
+  MessageCircleMore,
   MoreHorizontal,
   Plus,
   Radar,
   RefreshCw,
   Search,
   Send,
+  Headphones,
   ShieldCheck,
   Smartphone,
   Sparkles,
@@ -58,6 +65,12 @@ type Account = {
   requestsUsed: number;
   requestsRemaining: number | null;
   accessExpiresAt: string | null;
+  accessExpired: boolean;
+  creditsActive: boolean;
+  creditsBalance: number;
+  creditsPurchased: number;
+  creditsSpent: number;
+  referralCode: string | null;
   validatorAccess: boolean;
   messagingAccess: boolean;
   sessionLimit: number | null;
@@ -66,7 +79,17 @@ type Account = {
   messagesRemaining: number | null;
 };
 type View =
-  "validate" | "lists" | "history" | "sessions" | "messaging" | "reports";
+  | "validate"
+  | "lists"
+  | "history"
+  | "sessions"
+  | "ai-chatter"
+  | "messaging"
+  | "reports"
+  | "credits"
+  | "affiliates"
+  | "updates"
+  | "stats";
 type ContactList = {
   id: string;
   name: string;
@@ -299,6 +322,121 @@ type TelegramMessageSchedule = {
   nextRunAt: string;
   lastRunAt: string | null;
 };
+type AiChatterData = {
+  setting: {
+    enabled: boolean;
+    reengageEnabled: boolean;
+    config: {
+      provider: "capitalbot" | "cupidbot";
+      replyDelayMs: number;
+      replyDelayJitterMs: number;
+      memoryMessageLimit: number;
+    };
+  };
+  providers: Array<{
+    provider: "capitalbot" | "cupidbot";
+    configured: boolean;
+    isValid: boolean;
+    modelId: number | null;
+    presetId: number | null;
+    catalog: {
+      models?: Array<Record<string, string | number>>;
+      presets?: Array<Record<string, string | number>>;
+    } | null;
+    lastValidatedAt: string | null;
+    validationError: string | null;
+  }>;
+  sessions: Array<{
+    id: string;
+    label: string;
+    phone: string | null;
+    username: string | null;
+    firstName: string | null;
+    lastName: string | null;
+    status: string;
+    isLoggedIn: boolean;
+    spamStatus: string;
+    riskScore: number;
+    lastActiveAt: string | null;
+    aiSetting: {
+      enabled: boolean;
+      config: Record<string, unknown> | null;
+      runtimeStatus: string;
+      lastConnectedAt: string | null;
+      lastHeartbeatAt: string | null;
+      lastError: string | null;
+    } | null;
+  }>;
+  overview: {
+    conversations: number;
+    completed: number;
+    sent: number;
+    failed: number;
+    successRate: number;
+    statusBreakdown: Record<string, number>;
+    queueBreakdown: Record<string, number>;
+  };
+  conversations: Array<{
+    id: string;
+    sessionId: string;
+    peerId: string;
+    recipientName: string;
+    recipientUsername: string;
+    messageCount: number;
+    conversationState: string;
+    lastCategory: string | null;
+    lastIncomingAt: string | null;
+    lastOutgoingAt: string | null;
+    updatedAt: string;
+    session: { label: string; username: string | null; phone: string | null };
+  }>;
+  recentJobs: Array<{
+    id: string;
+    sessionId: string;
+    peerId: string;
+    status: string;
+    attempts: number;
+    isFollowUp: boolean;
+    errorCode: string | null;
+    errorMessage: string | null;
+    runAfter: string;
+    createdAt: string;
+    finishedAt: string | null;
+  }>;
+};
+type AiConversationDetail = {
+  conversation: {
+    id: string;
+    sessionId: string;
+    peerId: string;
+    recipient: Record<string, string> | null;
+    messages: Array<{
+      id: string;
+      telegramMessageId: number | null;
+      timestamp: number;
+      msg: string;
+      isIncoming: boolean;
+      confirmed?: boolean;
+    }>;
+    conversationState: string;
+    lastCategory: string | null;
+    setting: { enabled: boolean; config: Record<string, unknown> | null } | null;
+    session: { label: string; username: string | null; phone: string | null };
+  };
+  logs: Array<{
+    id: string;
+    status: string;
+    provider: string;
+    category: string | null;
+    incomingText: string | null;
+    responseText: string | null;
+    isFollowUp: boolean;
+    didConvert: boolean;
+    errorCode: string | null;
+    errorMessage: string | null;
+    createdAt: string;
+  }>;
+};
 
 const ACTIVE = new Set(["pending", "running"]);
 const PANEL = "border border-white/[0.08] bg-[#0b1717]";
@@ -340,6 +478,8 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
     error.status = response.status;
     throw error;
   }
+  if (init?.method && init.method !== "GET")
+    window.dispatchEvent(new Event("signal-desk-account-changed"));
   return data as T;
 }
 
@@ -663,7 +803,7 @@ function AccessGate({ onUnlock }: { onUnlock: (account: Account) => void }) {
             <div className="mt-7 flex items-center justify-center gap-2 text-sm text-[#71807c]">
               No key?
               <Link
-                href="/validator/buy"
+                href="/buy"
                 className="font-semibold text-[#b8ff4b] transition hover:text-[#ceff82]"
               >
                 Buy one <ArrowRight size={13} className="inline" />
@@ -673,7 +813,7 @@ function AccessGate({ onUnlock }: { onUnlock: (account: Account) => void }) {
               href="/"
               className="mt-6 inline-flex items-center gap-2 text-xs font-medium text-[#71807c] transition hover:text-white"
             >
-              <ArrowLeft size={13} /> Return to Aria
+              <ArrowLeft size={13} /> Signal Desk home
             </Link>
           </div>
         </section>
@@ -803,6 +943,13 @@ function Workspace({
     return () => window.clearInterval(timer);
   }, [activeJob?.id, activeJob?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  useEffect(() => {
+    const refresh = () => void refreshAccount().catch(() => undefined);
+    window.addEventListener("signal-desk-account-changed", refresh);
+    return () =>
+      window.removeEventListener("signal-desk-account-changed", refresh);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   async function logout() {
     await fetch("/api/validator/auth", { method: "DELETE" });
     onLock();
@@ -844,6 +991,22 @@ function Workspace({
       disabled: !account.messagingAccess,
     },
     {
+      id: "ai-chatter" as const,
+      label: "AI Chatter",
+      sub: account.messagingAccess
+        ? "Auto-replies and tracking"
+        : "Messaging access required",
+      icon: MessageCircleMore,
+      disabled: !account.messagingAccess,
+    },
+    {
+      id: "stats" as const,
+      label: "Stats",
+      sub: "Usage and performance",
+      icon: Gauge,
+      disabled: false,
+    },
+    {
       id: "messaging" as const,
       label: "Messaging",
       sub: account.messagingAccess
@@ -861,17 +1024,38 @@ function Workspace({
       icon: FileText,
       disabled: !account.messagingAccess,
     },
+    {
+      id: "credits" as const,
+      label: "Credits & plan",
+      sub: `${formatNumber(account.creditsBalance)} available`,
+      icon: Coins,
+      disabled: false,
+    },
+    {
+      id: "affiliates" as const,
+      label: "Affiliate rewards",
+      sub: "Invite and earn",
+      icon: Gift,
+      disabled: false,
+    },
+    {
+      id: "updates" as const,
+      label: "What's new",
+      sub: "Releases and notices",
+      icon: Bell,
+      disabled: false,
+    },
   ];
 
   const sidebar = (
     <>
-      <div className="flex h-[72px] items-center gap-3 border-b border-white/[0.07] px-5">
+      <div className="flex h-[60px] items-center gap-3 border-b border-white/[0.07] px-4">
         <LogoMark small />
         <div>
-          <p className="text-sm font-semibold tracking-[0.08em] text-white">
+          <p className="text-[13px] font-semibold tracking-[0.08em] text-white">
             SIGNAL DESK
           </p>
-          <p className="text-[9px] uppercase tracking-[0.18em] text-[#5f6e69]">
+          <p className="text-[8px] uppercase tracking-[0.18em] text-[#5f6e69]">
             Telegram validator
           </p>
         </div>
@@ -882,8 +1066,18 @@ function Workspace({
           <X size={18} />
         </button>
       </div>
-      <nav className="flex-1 space-y-1 px-3 py-5">
-        <p className="mb-3 px-3 text-[9px] font-bold uppercase tracking-[0.2em] text-[#53615d]">
+
+      <div className="border-b border-white/[0.07] px-3 py-2">
+        <Link
+          href="/buy"
+          className="flex items-center justify-center gap-1.5 rounded-lg border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.06] py-2 text-[10px] font-semibold text-[#dfffaa] transition hover:border-[#b8ff4b]/40 hover:bg-[#b8ff4b]/10"
+        >
+          <Coins size={12} /> Top up — {formatNumber(account.creditsBalance)} credits
+        </Link>
+      </div>
+
+      <nav className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 py-3">
+        <p className="mb-1.5 px-2 text-[8px] font-bold uppercase tracking-[0.2em] text-[#53615d]">
           Workspace
         </p>
         {navigation.map((item, index) => (
@@ -895,16 +1089,18 @@ function Workspace({
               setView(item.id);
               setMobileNav(false);
             }}
-            className={`validator-nav-in group flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${view === item.id ? "bg-[#b8ff4b]/10 text-[#dfffaa]" : "text-[#7d8d88] hover:translate-x-1 hover:bg-white/[0.04] hover:text-white"}`}
+            className={`validator-nav-in group flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-left transition duration-300 disabled:cursor-not-allowed disabled:opacity-35 ${view === item.id ? "bg-[#b8ff4b]/10 text-[#dfffaa]" : "text-[#7d8d88] hover:translate-x-1 hover:bg-white/[0.04] hover:text-white"}`}
           >
             <span
-              className={`flex h-9 w-9 items-center justify-center rounded-lg border transition duration-300 ${view === item.id ? "border-[#b8ff4b]/20 bg-[#b8ff4b]/10 text-[#b8ff4b]" : "border-white/[0.07] bg-white/[0.025] group-hover:rotate-3 group-hover:border-white/15"}`}
+              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition duration-300 ${view === item.id ? "border-[#b8ff4b]/20 bg-[#b8ff4b]/10 text-[#b8ff4b]" : "border-white/[0.07] bg-white/[0.025] group-hover:rotate-3 group-hover:border-white/15"}`}
             >
-              <item.icon size={16} />
+              <item.icon size={14} />
             </span>
-            <span>
-              <span className="block text-sm font-medium">{item.label}</span>
-              <span className="mt-0.5 block text-[10px] text-[#53615d]">
+            <span className="min-w-0">
+              <span className="block truncate text-[12px] font-medium">
+                {item.label}
+              </span>
+              <span className="mt-px block truncate text-[9px] text-[#53615d]">
                 {item.sub}
               </span>
             </span>
@@ -916,44 +1112,52 @@ function Workspace({
         ))}
       </nav>
       <div className="border-t border-white/[0.07] p-3">
-        <div className="rounded-xl border border-white/[0.07] bg-white/[0.025] p-3">
+        <div className="rounded-xl border border-white/[0.08] bg-gradient-to-br from-white/[0.045] to-transparent p-2.5">
           <div className="flex items-center gap-2.5">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#40d6c2]/10 text-[#6cebd9]">
-              <KeyRound size={14} />
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#40d6c2]/10 text-[#6cebd9]">
+              <KeyRound size={13} />
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-xs font-medium text-[#d9e3df]">
+              <p className="truncate text-[11px] font-semibold text-[#d9e3df]">
                 {account.email}
               </p>
-              <p className="text-[9px] uppercase tracking-[0.14em] text-[#56645f]">
-                Key workspace
+              <p className="mt-0.5 truncate text-[8px] uppercase tracking-[0.12em] text-[#60706b]">
+                {account.planCode?.replaceAll("_", " ") || "Key workspace"}
+                <span className="mx-1.5 text-[#394743]">/</span>
+                {account.accessExpiresAt
+                  ? new Date(account.accessExpiresAt).toLocaleDateString()
+                  : "No expiry"}
               </p>
             </div>
-          </div>
-          <div className="mt-3 rounded-lg border border-white/[0.06] bg-[#071111] px-2.5 py-2 text-[9px] uppercase tracking-[0.12em] text-[#5c6b66]">
-            <span className="text-[#8c9a95]">
-              {account.planCode
-                ? account.planCode.replaceAll("_", " ")
-                : "Admin access"}
-            </span>
-            <span className="float-right font-mono text-[#b8ff4b]">
-              {account.requestsRemaining == null
-                ? "Unlimited"
-                : `${formatNumber(account.requestsRemaining)} left`}
-            </span>
-          </div>
-          <div className="mt-2 flex gap-2">
-            <Link
-              href="/"
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/[0.07] py-2 text-[10px] font-semibold text-[#72817c] transition hover:text-white"
+            <button
+              onClick={() => {
+                setView("credits");
+                setMobileNav(false);
+              }}
+              className="rounded-lg border border-[#b8ff4b]/15 bg-[#b8ff4b]/[0.06] px-2 py-1.5 text-right transition hover:border-[#b8ff4b]/30"
             >
-              <ArrowLeft size={11} /> Aria
-            </Link>
+              <span className="block font-mono text-[11px] font-semibold text-[#dfffaa]">
+                {formatNumber(account.creditsBalance)}
+              </span>
+              <span className="block text-[7px] uppercase tracking-wider text-[#73816d]">
+                credits
+              </span>
+            </button>
+          </div>
+          <div className="mt-2 grid grid-cols-2 gap-1.5">
+            <a
+              href="https://t.me/agedguru"
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-center gap-1 rounded-lg border border-white/[0.07] py-1.5 text-[9px] font-semibold text-[#75847f] transition hover:border-[#65e6ff]/20 hover:text-[#a8f1ff]"
+            >
+              <Headphones size={10} /> Support
+            </a>
             <button
               onClick={logout}
-              className="flex flex-1 items-center justify-center gap-1.5 rounded-lg border border-white/[0.07] py-2 text-[10px] font-semibold text-[#72817c] transition hover:border-[#ff7474]/20 hover:text-[#ff8d8d]"
+              className="flex items-center justify-center gap-1 rounded-lg border border-white/[0.07] py-1.5 text-[9px] font-semibold text-[#75847f] transition hover:border-[#ff7474]/20 hover:text-[#ff8d8d]"
             >
-              <LogOut size={11} /> Lock
+              <LogOut size={10} /> Lock
             </button>
           </div>
         </div>
@@ -994,6 +1198,12 @@ function Workspace({
             </h1>
           </div>
           <div className="ml-auto flex items-center gap-3">
+            <button
+              onClick={() => setView("credits")}
+              className="hidden items-center gap-2 rounded-xl border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.06] px-3 py-2 text-xs font-semibold text-[#dfffaa] sm:flex"
+            >
+              <Coins size={14} /> {formatNumber(account.creditsBalance)} credits
+            </button>
             {activeJob && ACTIVE.has(activeJob.status) && (
               <button
                 onClick={() => setView("validate")}
@@ -1058,6 +1268,8 @@ function Workspace({
               />
             ) : view === "sessions" ? (
               <TelegramSessionsView account={account} notify={notify} />
+            ) : view === "ai-chatter" ? (
+              <AiChatterView notify={notify} />
             ) : view === "messaging" ? (
               <MessagingView
                 account={account}
@@ -1066,8 +1278,31 @@ function Workspace({
                 openReports={() => setView("reports")}
                 onUsageChanged={refreshAccount}
               />
-            ) : (
+            ) : view === "reports" ? (
               <ReportsView notify={notify} />
+            ) : view === "stats" ? (
+              <StatsView account={account} />
+            ) : view === "credits" ? (
+              <AccountCenter
+                account={account}
+                mode="credits"
+                notify={notify}
+                onAccountChanged={onAccountChanged}
+              />
+            ) : view === "affiliates" ? (
+              <AccountCenter
+                account={account}
+                mode="affiliates"
+                notify={notify}
+                onAccountChanged={onAccountChanged}
+              />
+            ) : (
+              <AccountCenter
+                account={account}
+                mode="updates"
+                notify={notify}
+                onAccountChanged={onAccountChanged}
+              />
             )}
           </div>
         </main>
@@ -1098,6 +1333,492 @@ function Workspace({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+type AccountCenterData = {
+  account: Account;
+  transactions: Array<{
+    id: string;
+    amount: number;
+    balanceAfter: number;
+    kind: string;
+    taskCode: string | null;
+    description: string;
+    createdAt: string;
+  }>;
+  rewards: Array<{
+    id: string;
+    rateBps: number;
+    depositUsdCents: number;
+    rewardCredits: number;
+    createdAt: string;
+    referredAccount: { email: string };
+  }>;
+  referrals: Array<{
+    id: string;
+    email: string;
+    currentPlanCode: string | null;
+    createdAt: string;
+  }>;
+  updates: Array<{
+    id: string;
+    title: string;
+    body: string;
+    tag: string;
+    publishedAt: string;
+  }>;
+  creditSettings: {
+    affiliateRateBps: number;
+    topups: Array<{
+      code: string;
+      name: string;
+      credits: number;
+      priceUsdCents: number;
+      enabled: boolean;
+      featured: boolean;
+    }>;
+    tasks: Record<
+      string,
+      {
+        label: string;
+        baseCost: number;
+        itemCost: number;
+        itemUnit: number;
+        sessionCost: number;
+        enabled: boolean;
+      }
+    >;
+  };
+};
+
+function AccountCenter({
+  account,
+  mode,
+  notify,
+  onAccountChanged,
+}: {
+  account: Account;
+  mode: "credits" | "affiliates" | "updates";
+  notify: (message: string, tone?: Toast["tone"]) => void;
+  onAccountChanged: (account: Account) => void;
+}) {
+  const [data, setData] = useState<AccountCenterData | null>(null);
+  const [busyPack, setBusyPack] = useState("");
+  const [copied, setCopied] = useState(false);
+
+  async function load() {
+    const result = await api<AccountCenterData>("/api/validator/account");
+    setData(result);
+    onAccountChanged(result.account);
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load().catch((error) => notify(error.message, "error"));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function topup(packCode: string) {
+    setBusyPack(packCode);
+    try {
+      const checkout = await api<{
+        purchaseId: string;
+        claimToken: string;
+        paymentUrl: string | null;
+      }>("/api/validator/billing/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "topup", packCode }),
+      });
+      window.localStorage.setItem(
+        `validator_purchase_${checkout.purchaseId}`,
+        checkout.claimToken,
+      );
+      if (checkout.paymentUrl) window.location.assign(checkout.paymentUrl);
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "Unable to start top-up",
+        "error",
+      );
+      setBusyPack("");
+    }
+  }
+
+  if (!data)
+    return (
+      <div className="flex min-h-[70dvh] items-center justify-center">
+        <Loader2 size={23} className="animate-spin text-[#b8ff4b]" />
+      </div>
+    );
+
+  if (mode === "updates") {
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
+        <div className="flex items-center justify-between gap-4 rounded-[24px] border border-[#b8ff4b]/15 bg-gradient-to-r from-[#b8ff4b]/[0.065] to-transparent p-5 sm:p-6">
+          <div>
+            <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">
+              Signal Desk newsroom
+            </p>
+            <h2 className="mt-1.5 text-2xl font-semibold tracking-[-0.04em] sm:text-3xl">
+              News and releases
+            </h2>
+            <p className="mt-1.5 max-w-2xl text-xs leading-5 text-[#788781]">
+              Product releases, safety changes, and operator notices in one
+              compact feed.
+            </p>
+          </div>
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#b8ff4b]/20 bg-[#b8ff4b]/10 text-[#b8ff4b]">
+            <Bell size={17} />
+          </span>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {data.updates.map((item, index) => (
+            <article
+              key={item.id}
+              style={{ animationDelay: `${index * 60}ms` }}
+              className={`${PANEL} validator-card-in rounded-[20px] p-4 sm:p-5`}
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="rounded-full border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.06] px-2 py-0.5 text-[8px] font-bold uppercase tracking-wider text-[#b8ff4b]">
+                  {item.tag}
+                </span>
+                <time className="text-[9px] uppercase tracking-wider text-[#5f6d68]">
+                  {new Date(item.publishedAt).toLocaleDateString(undefined, {
+                    month: "short",
+                    day: "numeric",
+                    year: "numeric",
+                  })}
+                </time>
+              </div>
+              <h3 className="mt-3 text-base font-semibold leading-5 text-[#e3ece8]">
+                {item.title}
+              </h3>
+              <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#80908a]">
+                {item.body}
+              </p>
+            </article>
+          ))}
+          {!data.updates.length && (
+            <div
+              className={`${PANEL} rounded-[20px] p-10 text-center md:col-span-2`}
+            >
+              <Bell size={21} className="mx-auto text-[#52605c]" />
+              <p className="mt-3 text-xs text-[#71807c]">
+                No news published yet.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (mode === "affiliates") {
+    const referralUrl =
+      typeof window === "undefined" || !account.referralCode
+        ? ""
+        : `${window.location.origin}/buy?ref=${account.referralCode}`;
+    const earned = data.rewards.reduce(
+      (sum, reward) => sum + reward.rewardCredits,
+      0,
+    );
+    const deposits = data.rewards.reduce(
+      (sum, reward) => sum + reward.depositUsdCents,
+      0,
+    );
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-7 lg:p-10">
+        <div className="overflow-hidden rounded-[30px] border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.055] p-6 sm:p-8">
+          <div className="grid items-end gap-8 lg:grid-cols-[1fr_.8fr]">
+            <div>
+              <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#b8ff4b]/10 text-[#b8ff4b]">
+                <Gift size={21} />
+              </span>
+              <p className="mt-6 text-[10px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">
+                Affiliate network
+              </p>
+              <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] sm:text-4xl">
+                Invite operators.
+                <br />
+                Earn from every deposit.
+              </h2>
+              <p className="mt-4 max-w-xl text-sm leading-7 text-[#81908c]">
+                You receive {data.creditSettings.affiliateRateBps / 100}% of
+                each referred user&apos;s paid plan and credit top-up as
+                workspace credits. Rewards are added automatically after payment
+                confirmation.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-white/[0.08] bg-[#071111] p-4">
+              <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[#60706b]">
+                Your referral link
+              </p>
+              <div className="mt-3 flex items-center gap-2 rounded-xl border border-white/10 bg-[#0b1717] p-3">
+                <code className="min-w-0 flex-1 truncate text-xs text-[#dfffaa]">
+                  {referralUrl}
+                </code>
+                <button
+                  onClick={async () => {
+                    await navigator.clipboard.writeText(referralUrl);
+                    setCopied(true);
+                    notify("Referral link copied.", "success");
+                  }}
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-white/10 text-[#82908b] hover:text-[#b8ff4b]"
+                >
+                  {copied ? <Check size={15} /> : <Copy size={15} />}
+                </button>
+              </div>
+              <p className="mt-3 font-mono text-xs text-[#71807c]">
+                Code:{" "}
+                <span className="text-[#b8ff4b]">{account.referralCode}</span>
+              </p>
+            </div>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-4 sm:grid-cols-3">
+          <Metric
+            label="Invited users"
+            value={data.referrals.length}
+            icon={Users}
+          />
+          <Metric
+            label="Reward credits"
+            value={earned}
+            icon={Coins}
+            color="text-[#b8ff4b]"
+          />
+          <Metric
+            label="Tracked deposits"
+            value={`$${(deposits / 100).toFixed(2)}`}
+            icon={BadgeDollarSign}
+            color="text-[#65e6ff]"
+          />
+        </div>
+        <section className={`${PANEL} mt-5 overflow-hidden rounded-[24px]`}>
+          <div className="border-b border-white/[0.07] p-5">
+            <h3 className="font-semibold">Reward history</h3>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[680px] text-left text-sm">
+              <thead>
+                <tr className="border-b border-white/[0.07] text-[9px] uppercase tracking-wider text-[#61706b]">
+                  <th className="px-5 py-3">Referred user</th>
+                  <th>Deposit</th>
+                  <th>Rate</th>
+                  <th>Reward</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/[0.06]">
+                {data.rewards.map((reward) => (
+                  <tr key={reward.id}>
+                    <td className="px-5 py-3">
+                      {reward.referredAccount.email}
+                    </td>
+                    <td>${(reward.depositUsdCents / 100).toFixed(2)}</td>
+                    <td>{reward.rateBps / 100}%</td>
+                    <td className="font-mono text-[#b8ff4b]">
+                      +{reward.rewardCredits.toLocaleString()}
+                    </td>
+                    <td className="text-xs text-[#71807c]">
+                      {new Date(reward.createdAt).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {!data.rewards.length && (
+            <p className="p-10 text-center text-sm text-[#71807c]">
+              Share your referral link to start earning.
+            </p>
+          )}
+        </section>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-auto max-w-6xl p-4 sm:p-7 lg:p-10">
+      <div className="grid gap-4 lg:grid-cols-[1.08fr_.92fr]">
+        <section className="overflow-hidden rounded-[30px] border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.055] p-6 sm:p-8">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">
+                Available balance
+              </p>
+              <p className="mt-3 font-mono text-5xl font-semibold tracking-[-0.06em] sm:text-6xl">
+                {formatNumber(account.creditsBalance)}
+              </p>
+              <p className="mt-2 text-sm text-[#81908c]">workspace credits</p>
+            </div>
+            <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#b8ff4b]/10 text-[#b8ff4b]">
+              <Coins size={21} />
+            </span>
+          </div>
+          <div className="mt-8 grid grid-cols-2 gap-3 border-t border-white/[0.08] pt-5">
+            <div>
+              <p className="font-mono text-lg">
+                {formatNumber(account.creditsPurchased)}
+              </p>
+              <p className="mt-1 text-[9px] uppercase tracking-wider text-[#64736e]">
+                Credits issued
+              </p>
+            </div>
+            <div>
+              <p className="font-mono text-lg">
+                {formatNumber(account.creditsSpent)}
+              </p>
+              <p className="mt-1 text-[9px] uppercase tracking-wider text-[#64736e]">
+                Credits consumed
+              </p>
+            </div>
+          </div>
+        </section>
+        <section className={`${PANEL} rounded-[30px] p-6 sm:p-8`}>
+          <div className="flex items-center gap-3">
+            <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#65e6ff]/10 text-[#65e6ff]">
+              <KeyRound size={17} />
+            </span>
+            <div>
+              <p className="font-semibold capitalize">
+                {account.planCode?.replaceAll("_", " ") || "Manual access"}
+              </p>
+              <p className="text-[10px] uppercase tracking-wider text-[#65736f]">
+                Current operating level
+              </p>
+            </div>
+          </div>
+          <div className="mt-6 space-y-3 text-sm">
+            <div className="flex justify-between border-b border-white/[0.06] pb-3">
+              <span className="text-[#71807c]">Workspace email</span>
+              <span>{account.email}</span>
+            </div>
+            <div className="flex justify-between border-b border-white/[0.06] pb-3">
+              <span className="text-[#71807c]">Key expiry</span>
+              <span className={account.accessExpired ? "text-[#ff8d8d]" : ""}>
+                {account.accessExpiresAt
+                  ? new Date(account.accessExpiresAt).toLocaleDateString()
+                  : "No expiry"}
+              </span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-[#71807c]">Paid tasks</span>
+              <span
+                className={
+                  account.creditsActive ? "text-[#b8ff4b]" : "text-[#ff8d8d]"
+                }
+              >
+                {account.creditsActive ? "Ready" : "Top-up required"}
+              </span>
+            </div>
+          </div>
+          {account.accessExpired && (
+            <p className="mt-5 rounded-xl border border-[#f4ca64]/20 bg-[#f4ca64]/[0.06] p-3 text-xs leading-5 text-[#f4ca64]">
+              Your key still signs in normally. Add any credit pack to
+              reactivate paid tools, or choose a new plan.
+            </p>
+          )}
+        </section>
+      </div>
+
+      <div className="mt-8 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#b8ff4b]">
+            Instant capacity
+          </p>
+          <h3 className="mt-2 text-2xl font-semibold">Top up credits</h3>
+        </div>
+        <Link
+          href="/buy"
+          className="text-xs font-semibold text-[#81908c] hover:text-white"
+        >
+          Compare plans <ArrowRight size={13} className="inline" />
+        </Link>
+      </div>
+      <div className="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {data.creditSettings.topups
+          .filter((pack) => pack.enabled)
+          .map((pack) => (
+            <article
+              key={pack.code}
+              className={`relative rounded-[24px] border p-5 ${pack.featured ? "border-[#b8ff4b]/35 bg-[#b8ff4b]/[0.055]" : "border-white/[0.08] bg-[#0b1717]"}`}
+            >
+              {pack.featured && (
+                <span className="absolute right-4 top-4 rounded-full bg-[#b8ff4b] px-2 py-1 text-[8px] font-black uppercase text-[#07100d]">
+                  Best value
+                </span>
+              )}
+              <Coins size={18} className="text-[#b8ff4b]" />
+              <h4 className="mt-5 font-semibold">{pack.name}</h4>
+              <p className="mt-2 font-mono text-2xl">
+                {pack.credits.toLocaleString()}
+              </p>
+              <p className="text-[9px] uppercase tracking-wider text-[#60706b]">
+                credits
+              </p>
+              <button
+                disabled={!!busyPack}
+                onClick={() => void topup(pack.code)}
+                className="mt-5 flex w-full items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3 py-2.5 text-xs font-bold transition hover:border-[#b8ff4b]/25 hover:text-[#dfffaa] disabled:opacity-40"
+              >
+                {busyPack === pack.code ? (
+                  <Loader2 size={13} className="animate-spin" />
+                ) : (
+                  <BadgeDollarSign size={13} />
+                )}
+                Add for ${(pack.priceUsdCents / 100).toFixed(2)}
+              </button>
+            </article>
+          ))}
+      </div>
+
+      <section className={`${PANEL} mt-8 overflow-hidden rounded-[24px]`}>
+        <div className="border-b border-white/[0.07] p-5">
+          <h3 className="font-semibold">Recent credit activity</h3>
+          <p className="mt-1 text-xs text-[#65736f]">
+            Every credit movement is recorded.
+          </p>
+        </div>
+        <div className="divide-y divide-white/[0.06]">
+          {data.transactions.slice(0, 20).map((transaction) => (
+            <div
+              key={transaction.id}
+              className="flex items-center gap-4 px-5 py-3.5"
+            >
+              <span
+                className={`flex h-9 w-9 items-center justify-center rounded-xl ${transaction.amount > 0 ? "bg-[#b8ff4b]/10 text-[#b8ff4b]" : "bg-white/[0.04] text-[#81908c]"}`}
+              >
+                {transaction.amount > 0 ? (
+                  <Coins size={14} />
+                ) : (
+                  <Activity size={14} />
+                )}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">{transaction.description}</p>
+                <p className="mt-0.5 text-[10px] text-[#5f6d68]">
+                  {new Date(transaction.createdAt).toLocaleString()}
+                </p>
+              </div>
+              <div className="text-right">
+                <p
+                  className={`font-mono text-sm ${transaction.amount > 0 ? "text-[#b8ff4b]" : "text-[#c4cfcb]"}`}
+                >
+                  {transaction.amount > 0 ? "+" : ""}
+                  {transaction.amount.toLocaleString()}
+                </p>
+                <p className="text-[9px] text-[#5f6d68]">
+                  {transaction.balanceAfter.toLocaleString()} left
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1744,6 +2465,222 @@ function ValidateView({
             notify(message, "success");
           }}
         />
+      )}
+    </div>
+  );
+}
+
+type StatsData = {
+  totalJobs: number;
+  totalValid: number;
+  totalInvalid: number;
+  totalFailed: number;
+  totalProcessed: number;
+  totalRequests: number;
+  successRate: number;
+  byStatus: Record<string, number>;
+  lists: { total: number; totalItems: number; byType: Record<string, number> };
+  recentJobs: Array<{
+    id: string; status: string; validCount: number; invalidCount: number;
+    failedCount: number; totalCount: number; totalRequests: number;
+    createdAt: string; finishedAt: string | null; sourceListName: string;
+  }>;
+  daily: Array<{ date: string; total: number; valid: number; invalid: number }>;
+};
+
+function StatsCard({ label, value, icon: Icon, sub }: { label: string; value: string | number; icon: React.ElementType; sub?: string }) {
+  return (
+    <div className={`${PANEL} rounded-2xl p-4 sm:p-5`}>
+      <div className="flex items-center gap-3">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/[0.08] bg-white/[0.025] text-[#6cebd9]">
+          <Icon size={17} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-[11px] font-medium uppercase tracking-[0.1em] text-[#61706b]">
+            {label}
+          </p>
+          <p className="mt-0.5 truncate text-xl font-semibold tracking-[-0.02em] text-white">
+            {typeof value === "number" ? value.toLocaleString() : value}
+          </p>
+          {sub && <p className="mt-px truncate text-[10px] text-[#53615d]">{sub}</p>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StatsView({ account }: { account: Account }) {
+  const [data, setData] = useState<StatsData | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api<StatsData>("/api/validator/stats")
+      .then(setData)
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
+        <div className="flex min-h-[400px] items-center justify-center">
+          <Loader2 size={24} className="animate-spin text-[#b8ff4b]" />
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
+        <div className="flex min-h-[400px] items-center justify-center text-sm text-[#74837e]">
+          Could not load stats
+        </div>
+      </div>
+    );
+  }
+
+  const totalFinished = data.totalJobs - (data.byStatus.pending ?? 0) - (data.byStatus.running ?? 0);
+  const avgRequestsPerJob = data.totalJobs > 0 ? Math.round(data.totalRequests / data.totalJobs) : 0;
+
+  return (
+    <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">
+            Signal Desk analytics
+          </p>
+          <h2 className="mt-1.5 text-2xl font-semibold tracking-[-0.04em] sm:text-3xl">
+            Usage statistics
+          </h2>
+          <p className="mt-1.5 max-w-2xl text-xs leading-5 text-[#788781]">
+            Aggregated metrics across all validation runs and lists.
+          </p>
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <StatsCard label="Success rate" value={`${data.successRate}%`} icon={ShieldCheck} sub={`${data.totalValid.toLocaleString()} valid / ${data.totalProcessed.toLocaleString()} processed`} />
+        <StatsCard label="Total jobs" value={data.totalJobs} icon={Radar} sub={`${totalFinished} completed`} />
+        <StatsCard label="Total requests" value={data.totalRequests} icon={Activity} sub={`${avgRequestsPerJob} avg per job`} />
+        <StatsCard label="Lists & items" value={data.lists.total} icon={Layers3} sub={`${data.lists.totalItems.toLocaleString()} total items`} />
+      </div>
+
+      <div className="mt-6 grid gap-3 lg:grid-cols-3">
+        <div className={`${PANEL} rounded-2xl p-5 lg:col-span-2`}>
+          <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.16em] text-[#5f6d68]">
+            Daily activity (last 30 days)
+          </p>
+          <div className="relative h-[180px]">
+            {data.daily.length > 0 ? (() => {
+              const maxVal = Math.max(...data.daily.map((d) => d.total), 1);
+              return (
+                <div className="flex h-full items-end gap-[3px]">
+                  {data.daily.map((day, i) => {
+                    const h = Math.max(4, (day.total / maxVal) * 160);
+                    return (
+                      <div
+                        key={day.date}
+                        className="group relative flex flex-1 items-end justify-center"
+                        style={{ height: "100%" }}
+                      >
+                        <div
+                          className="w-full rounded-t-sm bg-gradient-to-t from-[#b8ff4b]/30 to-[#b8ff4b]/10 transition-all hover:from-[#b8ff4b]/50 hover:to-[#b8ff4b]/20"
+                          style={{ height: `${h}px`, minHeight: "4px" }}
+                        >
+                          <div className="invisible absolute -top-8 left-1/2 z-10 -translate-x-1/2 whitespace-nowrap rounded-lg border border-white/10 bg-[#0b1717] px-2 py-1 text-[9px] text-white shadow-xl group-hover:visible">
+                            {day.date.slice(5)} — {day.total} items ({day.valid} valid, {day.invalid} invalid)
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })() : (
+              <div className="flex h-full items-center justify-center text-[11px] text-[#53615d]">
+                No activity in the last 30 days
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className={`${PANEL} rounded-2xl p-5`}>
+          <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.16em] text-[#5f6d68]">
+            Job outcomes
+          </p>
+          {totalFinished > 0 ? (
+            <>
+              <div className="mb-4 flex h-[120px] items-center justify-center">
+                <svg viewBox="0 0 100 100" className="h-[120px] w-[120px] -rotate-90">
+                  <circle cx="50" cy="50" r="42" fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth="8" />
+                  {data.totalValid > 0 && (
+                    <circle cx="50" cy="50" r="42" fill="none" stroke="#b8ff4b" strokeWidth="8"
+                      strokeDasharray={`${(data.totalValid / data.totalProcessed) * 264} 264`}
+                      strokeLinecap="round" />
+                  )}
+                  {data.totalInvalid > 0 && (
+                    <circle cx="50" cy="50" r="42" fill="none" stroke="#ff7474" strokeWidth="8"
+                      strokeDasharray={`${(data.totalInvalid / data.totalProcessed) * 264} 264`}
+                      strokeDashoffset={`${-((data.totalValid / data.totalProcessed) * 264)}`}
+                      strokeLinecap="round" />
+                  )}
+                </svg>
+              </div>
+              <div className="space-y-2 text-[11px]">
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#b8ff4b]" />
+                  <span className="text-[#8c9a95]">Valid</span>
+                  <span className="ml-auto font-medium text-[#dfffaa]">{data.totalValid.toLocaleString()}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="h-2 w-2 rounded-full bg-[#ff7474]" />
+                  <span className="text-[#8c9a95]">Invalid</span>
+                  <span className="ml-auto font-medium text-[#ff8d8d]">{data.totalInvalid.toLocaleString()}</span>
+                </div>
+                {(data.byStatus.failed ?? 0) > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-[#f4ca64]" />
+                    <span className="text-[#8c9a95]">Failed</span>
+                    <span className="ml-auto font-medium text-[#f4ca64]">{data.totalFailed.toLocaleString()}</span>
+                  </div>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="flex h-[180px] items-center justify-center text-[11px] text-[#53615d]">
+              No data yet
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-3 sm:grid-cols-2">
+        <StatsCard label="Valid usernames" value={data.totalValid} icon={Check} sub={`${data.successRate}% of processed items`} />
+        <StatsCard label="Invalid usernames" value={data.totalInvalid} icon={X} sub={`${100 - data.successRate}% of processed items`} />
+      </div>
+
+      {data.recentJobs.length > 0 && (
+        <div className={`${PANEL} mt-6 rounded-2xl p-5`}>
+          <p className="mb-4 text-[10px] font-bold uppercase tracking-[0.16em] text-[#5f6d68]">
+            Recent runs
+          </p>
+          <div className="space-y-2">
+            {data.recentJobs.map((job) => {
+              const pct = job.totalCount > 0 ? Math.round(((job.validCount + job.invalidCount + job.failedCount) / job.totalCount) * 100) : 0;
+              return (
+                <div key={job.id} className="flex items-center gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5">
+                  <span className={`h-2 w-2 shrink-0 rounded-full ${job.status === "completed" ? "bg-[#b8ff4b]" : job.status === "running" ? "bg-[#65e6ff] animate-pulse" : job.status === "cancelled" ? "bg-[#ff7474]" : "bg-[#5f6d68]"}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-[11px] font-medium text-[#c8d4cf]">{job.sourceListName}</p>
+                    <p className="text-[9px] text-[#53615d]">{job.validCount} valid / {job.invalidCount} invalid / {job.totalCount} total</p>
+                  </div>
+                  <span className="shrink-0 text-[10px] font-semibold text-[#8c9a95]">{pct}%</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -4079,6 +5016,594 @@ function MessagingCampaignWorkspace({
           onClose={() => setDeleteSchedule(null)}
           onConfirm={() => updateSchedule(deleteSchedule, "delete")}
         />
+      )}
+    </div>
+  );
+}
+
+function AiChatterView({
+  notify,
+}: {
+  notify: (message: string, tone?: Toast["tone"]) => void;
+}) {
+  const [data, setData] = useState<AiChatterData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState("");
+  const [provider, setProvider] = useState<"capitalbot" | "cupidbot">(
+    "capitalbot",
+  );
+  const [secret, setSecret] = useState("");
+  const [modelId, setModelId] = useState("");
+  const [presetId, setPresetId] = useState("");
+  const [delayMs, setDelayMs] = useState("3000");
+  const [jitterMs, setJitterMs] = useState("2000");
+  const [memoryLimit, setMemoryLimit] = useState("100");
+  const [selectedConversation, setSelectedConversation] = useState<{
+    sessionId: string;
+    peerId: string;
+  } | null>(null);
+  const [detail, setDetail] = useState<AiConversationDetail | null>(null);
+
+  async function load(quiet = false) {
+    if (!quiet) setLoading(true);
+    try {
+      const result = await api<AiChatterData>("/api/validator/ai-chatter");
+      setData(result);
+      setProvider(result.setting.config.provider);
+      setDelayMs(String(result.setting.config.replyDelayMs));
+      setJitterMs(String(result.setting.config.replyDelayJitterMs));
+      setMemoryLimit(String(result.setting.config.memoryMessageLimit));
+      const capital = result.providers.find(
+        (item) => item.provider === "capitalbot",
+      );
+      if (capital) {
+        setModelId(capital.modelId ? String(capital.modelId) : "");
+        setPresetId(capital.presetId ? String(capital.presetId) : "");
+      }
+    } finally {
+      if (!quiet) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load().catch((error) => notify(error.message, "error"));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!data?.setting.enabled) return;
+    const timer = window.setInterval(() => void load(true).catch(() => undefined), 5000);
+    return () => window.clearInterval(timer);
+  }, [data?.setting.enabled]);
+
+  async function updateGlobal(
+    patch: Record<string, string | number | boolean>,
+    message: string,
+  ) {
+    setBusy("global");
+    try {
+      await api("/api/validator/ai-chatter", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      await load(true);
+      notify(message, "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "AI settings failed", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveProvider(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy("provider");
+    try {
+      await api("/api/validator/ai-chatter/providers", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider,
+          secret,
+          ...(provider === "capitalbot" && modelId
+            ? { modelId: Number(modelId) }
+            : {}),
+          ...(provider === "capitalbot" && presetId
+            ? { presetId: Number(presetId) }
+            : {}),
+        }),
+      });
+      setSecret("");
+      await load(true);
+      notify(
+        `${provider === "capitalbot" ? "CapitalBot" : "CupidBot"} credential validated and encrypted.`,
+        "success",
+      );
+    } catch (error) {
+      notify(
+        error instanceof Error ? error.message : "Provider validation failed",
+        "error",
+      );
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function saveModelPreset() {
+    if (!modelId || !presetId) return;
+    setBusy("catalog");
+    try {
+      await api("/api/validator/ai-chatter/providers", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "capitalbot",
+          modelId: Number(modelId),
+          presetId: Number(presetId),
+        }),
+      });
+      await load(true);
+      notify("CapitalBot model and preset updated.", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Update failed", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function setSessionEnabled(sessionId: string, enabled: boolean) {
+    setBusy(`session:${sessionId}`);
+    try {
+      await api(`/api/validator/ai-chatter/sessions/${sessionId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, catchup: true }),
+      });
+      await load(true);
+      notify(
+        enabled
+          ? "AI listener is starting; pending DMs will be checked once."
+          : "AI listener is stopping for this session.",
+        "success",
+      );
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Session update failed", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function openConversation(sessionId: string, peerId: string) {
+    setSelectedConversation({ sessionId, peerId });
+    setDetail(null);
+    try {
+      setDetail(
+        await api<AiConversationDetail>(
+          `/api/validator/ai-chatter/conversations/${sessionId}/${peerId}`,
+        ),
+      );
+    } catch (error) {
+      setSelectedConversation(null);
+      notify(error instanceof Error ? error.message : "Conversation load failed", "error");
+    }
+  }
+
+  async function setConversationEnabled(enabled: boolean) {
+    if (!selectedConversation) return;
+    setBusy("conversation");
+    try {
+      await api(
+        `/api/validator/ai-chatter/conversations/${selectedConversation.sessionId}/${selectedConversation.peerId}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        },
+      );
+      await openConversation(
+        selectedConversation.sessionId,
+        selectedConversation.peerId,
+      );
+      notify(enabled ? "AI resumed for this chat." : "AI paused for this chat.", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Chat update failed", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  async function clearMemory() {
+    if (!selectedConversation) return;
+    setBusy("memory");
+    try {
+      await api(
+        `/api/validator/ai-chatter/conversations/${selectedConversation.sessionId}/${selectedConversation.peerId}`,
+        { method: "DELETE" },
+      );
+      setSelectedConversation(null);
+      setDetail(null);
+      await load(true);
+      notify("Conversation memory cleared.", "success");
+    } catch (error) {
+      notify(error instanceof Error ? error.message : "Memory clear failed", "error");
+    } finally {
+      setBusy("");
+    }
+  }
+
+  if (loading || !data)
+    return (
+      <div className="flex min-h-[65vh] items-center justify-center">
+        <Loader2 size={24} className="animate-spin text-[#b8ff4b]" />
+      </div>
+    );
+
+  const activeProvider = data.providers.find(
+    (item) => item.provider === data.setting.config.provider,
+  );
+  const capital = data.providers.find((item) => item.provider === "capitalbot");
+  const models = capital?.catalog?.models || [];
+  const presets = capital?.catalog?.presets || [];
+  const enabledSessions = data.sessions.filter(
+    (session) => session.aiSetting?.enabled,
+  ).length;
+  const queueDepth =
+    (data.overview.queueBreakdown.pending || 0) +
+    (data.overview.queueBreakdown.processing || 0);
+
+  return (
+    <div className="mx-auto max-w-[1550px] p-4 sm:p-6 lg:p-8">
+      <section className="overflow-hidden rounded-[28px] border border-[#b8ff4b]/20 bg-[radial-gradient(circle_at_top_right,rgba(184,255,75,.11),transparent_38%),#0b1717] p-5 sm:p-7">
+        <div className="grid items-end gap-6 xl:grid-cols-[1fr_auto]">
+          <div>
+            <div className="flex items-center gap-2 text-[9px] font-bold uppercase tracking-[0.22em] text-[#b8ff4b]">
+              <span className="h-px w-8 bg-current" /> AI operations
+            </div>
+            <h2 className="mt-3 text-3xl font-semibold tracking-[-0.045em] sm:text-4xl">
+              Conversations that run themselves.
+            </h2>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-[#81908c]">
+              Personal DMs only. Signal Desk listens in real time, keeps memory
+              isolated by Telegram account and peer, delays replies naturally,
+              and records every provider outcome and Telegram send.
+            </p>
+            <div className="mt-5 flex flex-wrap gap-2 text-[10px]">
+              <span className="rounded-full border border-[#65e6ff]/20 bg-[#65e6ff]/[0.06] px-3 py-1.5 text-[#a8f1ff]">
+                {data.setting.config.provider === "capitalbot"
+                  ? "CapitalBot"
+                  : "CupidBot"}{" "}
+                active provider
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[#82908b]">
+                {enabledSessions} of {data.sessions.length} sessions enabled
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-1.5 text-[#82908b]">
+                {queueDepth} jobs in flight
+              </span>
+            </div>
+          </div>
+          <div className="min-w-[250px] rounded-2xl border border-white/[0.08] bg-[#071111]/90 p-4">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[#60706b]">
+                  Account kill switch
+                </p>
+                <p className={`mt-1 text-sm font-semibold ${data.setting.enabled ? "text-[#b8ff4b]" : "text-[#8b9994]"}`}>
+                  {data.setting.enabled ? "AI Chatter is live" : "AI Chatter is off"}
+                </p>
+              </div>
+              <button
+                onClick={() =>
+                  void updateGlobal(
+                    { enabled: !data.setting.enabled },
+                    data.setting.enabled
+                      ? "AI Chatter stopped account-wide."
+                      : "AI Chatter enabled account-wide.",
+                  )
+                }
+                disabled={busy === "global" || (!activeProvider?.isValid && !data.setting.enabled)}
+                className={`relative h-7 w-12 rounded-full transition ${data.setting.enabled ? "bg-[#b8ff4b]" : "bg-white/10"}`}
+                title={!activeProvider?.isValid ? "Validate the selected provider first" : undefined}
+              >
+                <span className={`absolute top-1 h-5 w-5 rounded-full bg-[#07100d] transition ${data.setting.enabled ? "left-6" : "left-1"}`} />
+              </button>
+            </div>
+            {!activeProvider?.isValid && (
+              <p className="mt-3 text-[10px] leading-4 text-[#f4ca64]">
+                Validate the selected provider before turning AI on.
+              </p>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+        <StatsCard label="Conversations" value={data.overview.conversations} icon={MessageCircleMore} sub="Isolated memory rows" />
+        <StatsCard label="Replies sent" value={data.overview.sent} icon={Send} sub={`${data.overview.completed} provider outcomes`} />
+        <StatsCard label="Send success" value={`${data.overview.successRate}%`} icon={ShieldCheck} sub={`${data.overview.failed} failed attempts`} />
+        <StatsCard label="Queue depth" value={queueDepth} icon={Activity} sub={`${data.overview.queueBreakdown.processing || 0} processing`} />
+        <StatsCard label="Live listeners" value={data.sessions.filter((session) => session.aiSetting?.runtimeStatus === "listening").length} icon={Radar} sub={`${enabledSessions} configured`} />
+      </div>
+
+      <div className="mt-5 grid gap-5 xl:grid-cols-[420px_1fr]">
+        <section className={`${PANEL} rounded-[24px] p-5`}>
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-[#65e6ff]">
+                Provider vault
+              </p>
+              <h3 className="mt-1 text-lg font-semibold">API access</h3>
+              <p className="mt-1 text-[10px] leading-4 text-[#60706b]">
+                Keys are validated server-side and encrypted with AES-GCM.
+              </p>
+            </div>
+            <KeyRound size={18} className="text-[#65e6ff]" />
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            {(["capitalbot", "cupidbot"] as const).map((item) => {
+              const saved = data.providers.find((value) => value.provider === item);
+              return (
+                <button
+                  key={item}
+                  onClick={() => setProvider(item)}
+                  className={`rounded-xl border p-3 text-left transition ${provider === item ? "border-[#65e6ff]/30 bg-[#65e6ff]/[0.06]" : "border-white/[0.07] bg-[#071111]"}`}
+                >
+                  <p className="text-xs font-semibold">
+                    {item === "capitalbot" ? "CapitalBot" : "CupidBot"}
+                  </p>
+                  <p className={`mt-1 text-[9px] ${saved?.isValid ? "text-[#b8ff4b]" : "text-[#60706b]"}`}>
+                    {saved?.isValid ? "Validated" : "Not configured"}
+                  </p>
+                </button>
+              );
+            })}
+          </div>
+          <form onSubmit={saveProvider} className="mt-4 space-y-3">
+            <label className="block text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+              {provider === "capitalbot" ? "License key" : "Access token"}
+              <input
+                type="password"
+                required
+                value={secret}
+                onChange={(event) => setSecret(event.target.value)}
+                placeholder="Encrypted after validation"
+                className={`${FIELD} mt-2 font-mono`}
+              />
+            </label>
+            <button disabled={busy === "provider" || !secret.trim()} className={`${PRIMARY} w-full`}>
+              {busy === "provider" ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
+              Validate and save
+            </button>
+          </form>
+          {capital?.isValid && (
+            <div className="mt-4 border-t border-white/[0.07] pt-4">
+              <p className="text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+                CapitalBot routing
+              </p>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <select value={modelId} onChange={(event) => setModelId(event.target.value)} className={FIELD}>
+                  {!models.length && <option value={modelId}>Model {modelId || 43}</option>}
+                  {models.map((model, index) => {
+                    const id = String(model.modelId || model.id || "");
+                    return <option key={`${id}-${index}`} value={id}>{String(model.name || model.modelName || `Model ${id}`)}</option>;
+                  })}
+                </select>
+                <select value={presetId} onChange={(event) => setPresetId(event.target.value)} className={FIELD}>
+                  {!presets.length && <option value={presetId}>Preset {presetId || 88}</option>}
+                  {presets.map((preset, index) => {
+                    const id = String(preset.id || preset.presetId || "");
+                    return <option key={`${id}-${index}`} value={id}>{String(preset.name || preset.presetName || `Preset ${id}`)}</option>;
+                  })}
+                </select>
+              </div>
+              <button onClick={saveModelPreset} disabled={busy === "catalog" || !modelId || !presetId} className={`${SECONDARY} mt-2 w-full`}>
+                Save model and preset
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section className={`${PANEL} rounded-[24px] p-5`}>
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="text-[9px] font-bold uppercase tracking-[0.18em] text-[#b8ff4b]">
+                Response policy
+              </p>
+              <h3 className="mt-1 text-lg font-semibold">Timing and memory</h3>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-white/[0.07] bg-[#071111] px-3 py-2">
+              <div>
+                <p className="text-[9px] font-semibold text-[#aebbb6]">Contextual follow-ups</p>
+                <p className="text-[8px] text-[#53615d]">30-60m, max 3 nudges</p>
+              </div>
+              <button
+                onClick={() => void updateGlobal({ reengageEnabled: !data.setting.reengageEnabled }, "Follow-up policy updated.")}
+                className={`relative h-6 w-10 rounded-full transition ${data.setting.reengageEnabled ? "bg-[#b8ff4b]" : "bg-white/10"}`}
+              >
+                <span className={`absolute top-1 h-4 w-4 rounded-full bg-[#07100d] transition ${data.setting.reengageEnabled ? "left-5" : "left-1"}`} />
+              </button>
+            </div>
+          </div>
+          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <label className="text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+              Provider
+              <select value={provider} onChange={(event) => setProvider(event.target.value as "capitalbot" | "cupidbot")} className={`${FIELD} mt-2`}>
+                <option value="capitalbot">CapitalBot</option>
+                <option value="cupidbot">CupidBot</option>
+              </select>
+            </label>
+            <label className="text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+              Base delay ms
+              <input type="number" min="0" max="60000" value={delayMs} onChange={(event) => setDelayMs(event.target.value)} className={`${FIELD} mt-2 font-mono`} />
+            </label>
+            <label className="text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+              Jitter ms
+              <input type="number" min="0" max="60000" value={jitterMs} onChange={(event) => setJitterMs(event.target.value)} className={`${FIELD} mt-2 font-mono`} />
+            </label>
+            <label className="text-[9px] font-bold uppercase tracking-wider text-[#65736f]">
+              Memory messages
+              <input type="number" min="10" max="200" value={memoryLimit} onChange={(event) => setMemoryLimit(event.target.value)} className={`${FIELD} mt-2 font-mono`} />
+            </label>
+          </div>
+          <button
+            onClick={() => void updateGlobal({
+              provider,
+              replyDelayMs: Number(delayMs),
+              replyDelayJitterMs: Number(jitterMs),
+              memoryMessageLimit: Number(memoryLimit),
+            }, "Response policy saved.")}
+            disabled={busy === "global"}
+            className={`${PRIMARY} mt-4`}
+          >
+            <Wand2 size={14} /> Save response policy
+          </button>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {[
+              ["Personal DMs only", "Groups, channels, bots, self, and Telegram 777000 are always excluded."],
+              ["Bounded context", "CapitalBot receives at most 55 messages; stored memory remains independently bounded."],
+              ["One-time catch-up", `Enabling a session checks up to 60 pending personal DMs from the last ${24} hours.`],
+            ].map(([title, copy]) => (
+              <div key={title} className="rounded-xl border border-white/[0.06] bg-[#071111] p-3">
+                <p className="text-[10px] font-semibold text-[#cbd7d2]">{title}</p>
+                <p className="mt-1 text-[9px] leading-4 text-[#60706b]">{copy}</p>
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section className={`${PANEL} mt-5 overflow-hidden rounded-[24px]`}>
+        <div className="flex flex-col gap-2 border-b border-white/[0.07] p-5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="font-semibold">Telegram AI listeners</h3>
+            <p className="mt-1 text-[10px] text-[#60706b]">
+              Session toggles inherit the account policy. Runtime heartbeat confirms the listener is actually connected.
+            </p>
+          </div>
+          <button onClick={() => void load(true)} className={SECONDARY}><RefreshCw size={13} /> Refresh health</button>
+        </div>
+        <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
+          {data.sessions.map((session) => {
+            const enabled = session.aiSetting?.enabled || false;
+            const available = session.status === "active" && session.isLoggedIn && session.spamStatus !== "frozen";
+            const runtime = session.aiSetting?.runtimeStatus || "stopped";
+            return (
+              <article key={session.id} className={`rounded-2xl border p-4 ${enabled ? "border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.035]" : "border-white/[0.07] bg-[#071111]"}`}>
+                <div className="flex items-start gap-3">
+                  <span className={`mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full ${runtime === "listening" ? "animate-pulse bg-[#b8ff4b] shadow-[0_0_10px_#b8ff4b]" : runtime === "error" ? "bg-[#ff7474]" : "bg-[#53615d]"}`} />
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-semibold">{session.label}</p>
+                    <p className="mt-1 truncate text-[9px] text-[#60706b]">
+                      {session.username ? `@${session.username}` : session.phone || "No username"} · {session.spamStatus} · risk {Math.round(session.riskScore)}
+                    </p>
+                  </div>
+                  <button
+                    disabled={!available || busy === `session:${session.id}`}
+                    onClick={() => void setSessionEnabled(session.id, !enabled)}
+                    className={`relative h-6 w-10 shrink-0 rounded-full transition ${enabled ? "bg-[#b8ff4b]" : "bg-white/10"}`}
+                  >
+                    <span className={`absolute top-1 h-4 w-4 rounded-full bg-[#07100d] transition ${enabled ? "left-5" : "left-1"}`} />
+                  </button>
+                </div>
+                <div className="mt-3 flex items-center justify-between gap-3 text-[9px]">
+                  <span className={`uppercase tracking-wider ${runtime === "listening" ? "text-[#b8ff4b]" : runtime === "error" ? "text-[#ff8585]" : "text-[#60706b]"}`}>{runtime}</span>
+                  <span className="text-[#53615d]">Heartbeat {relativeTime(session.aiSetting?.lastHeartbeatAt)}</span>
+                </div>
+                {session.aiSetting?.lastError && <p className="mt-2 truncate text-[9px] text-[#ff8585]" title={session.aiSetting.lastError}>{session.aiSetting.lastError}</p>}
+                {!available && <p className="mt-2 text-[9px] text-[#f4ca64]">Requires an active, non-frozen session.</p>}
+              </article>
+            );
+          })}
+          {!data.sessions.length && <p className="p-8 text-center text-xs text-[#60706b] md:col-span-2 xl:col-span-3">Add a Telegram session before enabling AI Chatter.</p>}
+        </div>
+      </section>
+
+      <div className="mt-5 grid gap-5 xl:grid-cols-[1fr_380px]">
+        <section className={`${PANEL} overflow-hidden rounded-[24px]`}>
+          <div className="border-b border-white/[0.07] p-5">
+            <h3 className="font-semibold">Conversations</h3>
+            <p className="mt-1 text-[10px] text-[#60706b]">Open a peer to inspect the exact memory and provider/send ledger.</p>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[800px] text-left">
+              <thead><tr className="border-b border-white/[0.06] text-[9px] uppercase tracking-wider text-[#60706b]"><th className="px-4 py-3">Recipient</th><th>Session</th><th>Messages</th><th>State</th><th>Last activity</th><th className="px-4">Action</th></tr></thead>
+              <tbody className="divide-y divide-white/[0.05]">
+                {data.conversations.map((conversation) => (
+                  <tr key={conversation.id} className="text-xs">
+                    <td className="px-4 py-3"><p className="font-medium">{conversation.recipientName || `Peer ${conversation.peerId}`}</p><p className="mt-0.5 font-mono text-[9px] text-[#60706b]">{conversation.recipientUsername ? `@${conversation.recipientUsername}` : conversation.peerId}</p></td>
+                    <td className="text-[#81908c]">{conversation.session.label}</td>
+                    <td className="font-mono text-[#81908c]">{conversation.messageCount}</td>
+                    <td><span className={`rounded-full border px-2 py-1 text-[9px] ${conversation.conversationState === "active" ? "border-[#b8ff4b]/20 text-[#b8ff4b]" : "border-[#f4ca64]/20 text-[#f4ca64]"}`}>{conversation.conversationState}</span></td>
+                    <td className="text-[#81908c]">{relativeTime(conversation.updatedAt)}</td>
+                    <td className="px-4"><button onClick={() => void openConversation(conversation.sessionId, conversation.peerId)} className={SECONDARY}>Inspect</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {!data.conversations.length && <p className="p-12 text-center text-xs text-[#60706b]">No AI conversations yet. Incoming personal DMs appear here after an enabled listener receives them.</p>}
+        </section>
+        <aside className={`${PANEL} rounded-[24px] p-4`}>
+          <div className="flex items-center justify-between"><div><h3 className="font-semibold">Queue ledger</h3><p className="mt-1 text-[9px] text-[#60706b]">Most recent 20 jobs</p></div><Activity size={16} className="text-[#65e6ff]" /></div>
+          <div className="mt-4 max-h-[520px] space-y-2 overflow-y-auto">
+            {data.recentJobs.map((job) => (
+              <button key={job.id} onClick={() => void openConversation(job.sessionId, job.peerId)} className="w-full rounded-xl border border-white/[0.06] bg-[#071111] p-3 text-left">
+                <div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${job.status === "sent" ? "bg-[#b8ff4b]" : job.status === "pending" || job.status === "processing" ? "animate-pulse bg-[#65e6ff]" : job.status === "failed" ? "bg-[#ff7474]" : "bg-[#f4ca64]"}`} /><span className="text-[10px] font-semibold uppercase tracking-wider">{job.status}</span><span className="ml-auto text-[8px] text-[#53615d]">{relativeTime(job.createdAt)}</span></div>
+                <p className="mt-2 font-mono text-[9px] text-[#71807c]">Peer {job.peerId} · attempt {job.attempts}{job.isFollowUp ? " · follow-up" : ""}</p>
+                {job.errorMessage && <p className="mt-1 truncate text-[9px] text-[#ff8585]" title={job.errorMessage}>{job.errorCode}: {job.errorMessage}</p>}
+              </button>
+            ))}
+            {!data.recentJobs.length && <p className="p-8 text-center text-[10px] text-[#60706b]">Queue is empty.</p>}
+          </div>
+        </aside>
+      </div>
+
+      {selectedConversation && (
+        <Modal title={detail ? (detail.conversation.recipient?.name || `Peer ${detail.conversation.peerId}`) : "Loading conversation"} description={detail ? `${detail.conversation.session.label} · isolated Telegram memory and audit trail` : undefined} onClose={() => { setSelectedConversation(null); setDetail(null); }} wide>
+          {!detail ? (
+            <div className="flex min-h-72 items-center justify-center"><Loader2 size={23} className="animate-spin text-[#b8ff4b]" /></div>
+          ) : (
+            <div className="grid gap-5 lg:grid-cols-[1fr_330px]">
+              <section>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => void setConversationEnabled(detail.conversation.setting?.enabled === false)} disabled={busy === "conversation"} className={SECONDARY}>
+                    {detail.conversation.setting?.enabled === false ? <><Check size={13} /> Resume AI</> : <><CircleStop size={13} /> Pause this chat</>}
+                  </button>
+                  <button onClick={() => void clearMemory()} disabled={busy === "memory"} className="inline-flex items-center gap-2 rounded-xl border border-[#ff7474]/20 bg-[#ff7474]/[0.06] px-3 py-2.5 text-xs text-[#ff9b9b]"><Trash2 size={13} /> Clear memory</button>
+                  <span className="ml-auto text-[9px] uppercase tracking-wider text-[#60706b]">{detail.conversation.messages.length} memory messages</span>
+                </div>
+                <div className="mt-4 max-h-[62vh] space-y-3 overflow-y-auto rounded-2xl border border-white/[0.07] bg-[#071111] p-4">
+                  {detail.conversation.messages.map((message, index) => (
+                    <div key={`${message.id}-${index}`} className={`flex ${message.isIncoming ? "justify-start" : "justify-end"}`}>
+                      <div className={`max-w-[82%] rounded-2xl px-3.5 py-2.5 ${message.isIncoming ? "rounded-bl-sm border border-white/[0.08] bg-[#0b1717]" : "rounded-br-sm bg-[#b8ff4b] text-[#07100d]"}`}>
+                        <p className="whitespace-pre-wrap text-xs leading-5">{message.msg}</p>
+                        <p className={`mt-1 text-[8px] ${message.isIncoming ? "text-[#53615d]" : "text-[#42521d]"}`}>{new Date(message.timestamp).toLocaleString()} · TG {message.telegramMessageId || "-"}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+              <aside className="min-w-0">
+                <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-[#65e6ff]">Provider and send log</p>
+                <div className="mt-3 max-h-[66vh] space-y-2 overflow-y-auto">
+                  {[...detail.logs].reverse().map((log) => (
+                    <div key={log.id} className="rounded-xl border border-white/[0.07] bg-[#071111] p-3">
+                      <div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${log.status === "sent" ? "bg-[#b8ff4b]" : log.status === "failed" ? "bg-[#ff7474]" : "bg-[#f4ca64]"}`} /><span className="text-[9px] font-bold uppercase tracking-wider">{log.status}</span><span className="ml-auto text-[8px] text-[#53615d]">{relativeTime(log.createdAt)}</span></div>
+                      <p className="mt-2 text-[9px] text-[#71807c]">{log.provider}{log.isFollowUp ? " · follow-up" : ""}{log.category ? ` · ${log.category}` : ""}</p>
+                      {log.incomingText && <p className="mt-2 rounded-lg border border-white/[0.05] p-2 text-[10px] leading-4 text-[#9ba9a4]">In: {log.incomingText}</p>}
+                      {log.responseText && <p className="mt-2 rounded-lg bg-[#b8ff4b]/[0.06] p-2 text-[10px] leading-4 text-[#dfffaa]">Out: {log.responseText}</p>}
+                      {log.errorMessage && <p className="mt-2 text-[9px] leading-4 text-[#ff8585]">{log.errorCode}: {log.errorMessage}</p>}
+                    </div>
+                  ))}
+                  {!detail.logs.length && <p className="p-8 text-center text-[10px] text-[#60706b]">No provider attempts yet.</p>}
+                </div>
+              </aside>
+            </div>
+          )}
+        </Modal>
       )}
     </div>
   );

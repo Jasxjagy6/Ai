@@ -1,13 +1,22 @@
 import type { Metadata } from "next";
-import { ValidatorPurchase } from "@/components/validator/validator-purchase";
-import { getValidatorPlans, VALIDATOR_PLAN_CODES } from "@/lib/validator-plans";
+import { redirect } from "next/navigation";
 
 export const metadata: Metadata = {
   title: "Buy Validator Access | Signal Desk",
-  description: "Choose a Signal Desk validator access plan and pay securely with OxaPay.",
+  description:
+    "Choose a Signal Desk validator access plan and pay securely with OxaPay.",
 };
 
-export default async function ValidatorBuyPage({ searchParams }: { searchParams: Promise<{ purchase?: string; token?: string }> }) {
-  const [plans, query] = await Promise.all([getValidatorPlans(), searchParams]);
-  return <ValidatorPurchase plans={VALIDATOR_PLAN_CODES.map((code) => plans[code]).filter((plan) => plan.enabled)} initialPurchase={query.purchase} initialToken={query.token} />;
+export default async function ValidatorBuyPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | undefined>>;
+}) {
+  const query = await searchParams;
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query))
+    if (value) params.set(key, value);
+  redirect(
+    `${process.env.VALIDATOR_PUBLIC_URL || "http://localhost:3100"}/buy${params.size ? `?${params}` : ""}`,
+  );
 }

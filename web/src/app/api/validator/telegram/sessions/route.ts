@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { importTelegramSessions, sessionView } from "@/lib/telegram-control";
 import { requireMessagingAccount } from "@/lib/validator-auth";
 import { messagingUnauthorized, validatorError } from "@/lib/validator-api";
+import { runChargedValidatorTask } from "@/lib/validator-credits";
 
 const bulkActionSchema = z.discriminatedUnion("action", [
   z.object({
@@ -45,7 +46,16 @@ export async function POST(request: Request) {
     const files = form
       .getAll("sessions")
       .filter((value): value is File => value instanceof File);
-    const results = await importTelegramSessions(account, files);
+    const results = await runChargedValidatorTask(
+      {
+        accountId: account.id,
+        accessKeyId: account.accessKeyId,
+        taskCode: "session_import",
+        items: files.length,
+        description: `Import ${files.length.toLocaleString()} Telegram session files`,
+      },
+      () => importTelegramSessions(account, files),
+    );
     return NextResponse.json(
       { results, imported: results.filter((result) => result.ok).length },
       { status: 201 },
@@ -69,7 +79,7 @@ export async function PATCH(request: Request) {
   const data = parsed.data;
   const sessionIds = [...new Set(data.sessionIds)];
   const where = { id: { in: sessionIds }, accountId: account.id };
-  const result =
+  const operation = async () =>
     data.action === "warmup_mode"
       ? await prisma.telegramSession.updateMany({
           where,
@@ -90,6 +100,23 @@ export async function PATCH(request: Request) {
               ? { spamCheckRequested: true, spamCheckClaimedAt: null }
               : { warmupRequested: true, warmupClaimedAt: null },
         });
+  const result =
+    data.action === "warmup_mode"
+      ? await operation()
+      : await runChargedValidatorTask(
+          {
+            accountId: account.id,
+            accessKeyId: account.accessKeyId,
+            taskCode:
+              data.action === "spam_check" ? "spam_check" : "session_warmup",
+            sessions: sessionIds.length,
+            description:
+              data.action === "spam_check"
+                ? `Run ${sessionIds.length} SpamBot checks`
+                : `Queue warmup for ${sessionIds.length} sessions`,
+          },
+          operation,
+        );
   return NextResponse.json(
     { updated: result.count, skipped: sessionIds.length - result.count },
     { status: 202 },

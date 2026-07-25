@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -10,15 +11,18 @@ import struct
 import uuid
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
+from urllib.error import HTTPError
 from urllib.parse import unquote, urlparse
+from urllib.request import Request, urlopen
 
 import asyncpg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from hydrogram import Client, enums, raw
+from hydrogram import Client, enums, filters, raw
 from hydrogram.errors import (
     AuthKeyDuplicated, AuthKeyUnregistered, FloodWait, PeerFlood,
     SessionPasswordNeeded, SessionRevoked, UserDeactivated, UserDeactivatedBan,
 )
+from hydrogram.handlers import MessageHandler
 
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
@@ -29,6 +33,17 @@ WARMUP_MIN_GAP_MINUTES = max(5, int(os.getenv("TELEGRAM_WARMUP_MIN_GAP_MINUTES",
 WARMUP_DELAY_MIN_SECONDS = max(0.0, float(os.getenv("TELEGRAM_WARMUP_DELAY_MIN_SECONDS", "4")))
 WARMUP_DELAY_MAX_SECONDS = max(WARMUP_DELAY_MIN_SECONDS, float(os.getenv("TELEGRAM_WARMUP_DELAY_MAX_SECONDS", "12")))
 SESSION_DEAD_ERRORS = (AuthKeyDuplicated, AuthKeyUnregistered, SessionRevoked, UserDeactivated, UserDeactivatedBan)
+AI_RECONCILE_SECONDS = max(2.0, float(os.getenv("AI_RECONCILE_SECONDS", "5")))
+AI_JOB_CONCURRENCY = max(1, min(10, int(os.getenv("AI_JOB_CONCURRENCY", "3"))))
+AI_CATCHUP_MAX_CHATS = max(1, min(200, int(os.getenv("AI_CATCHUP_MAX_CHATS", "60"))))
+AI_CATCHUP_DIALOG_LIMIT = max(1, min(500, int(os.getenv("AI_CATCHUP_DIALOG_LIMIT", "200"))))
+AI_CATCHUP_HOURS = max(1, min(168, int(os.getenv("AI_CATCHUP_HOURS", "24"))))
+AI_CAPITALBOT_ENDPOINT = os.getenv("CAPITALBOT_ENDPOINT_URL", "https://api.capitalbot.ai/generateResponse")
+AI_CUPIDBOT_ENDPOINT = os.getenv("CUPIDBOT_ENDPOINT_URL", "https://chat-api.cupidbotofm.ai/api/generateChatResponse")
+AI_CLIENTS = {}
+AI_CATCHUP_TASKS = set()
+AI_BUSY_SESSIONS = set()
+AI_TRANSIENT_CLIENTS = {}
 
 
 def data_key() -> bytes:
@@ -180,6 +195,13 @@ def json_value(value) -> dict:
     return value if isinstance(value, dict) else json.loads(value or "{}")
 
 
+def json_list(value) -> list:
+    if isinstance(value, list):
+        return value
+    parsed = json.loads(value or "[]")
+    return parsed if isinstance(parsed, list) else []
+
+
 def proxy_value(encrypted: str | None) -> dict | None:
     if not encrypted:
         return None
@@ -252,7 +274,7 @@ def canonical_session(raw: bytes, session_format: str, api_id: int) -> str:
     return external_string_session(raw.decode().strip(), api_id)
 
 
-def client_for(record, session_string: str | None = None) -> Client:
+def client_for(record, session_string: str | None = None, updates: bool = False) -> Client:
     proxy_enabled = record.get("proxyEnabled", bool(record.get("proxyEncrypted")))
     anti_detect = record.get("antiDetectEnabled", True)
     return Client(
@@ -261,7 +283,7 @@ def client_for(record, session_string: str | None = None) -> Client:
         api_hash=decrypt(record["apiHashEncrypted"]).decode(),
         session_string=session_string,
         in_memory=True,
-        no_updates=True,
+        no_updates=not updates,
         workers=1,
         proxy=proxy_value(record.get("proxyEncrypted")) if proxy_enabled else None,
         **identity_kwargs(record.get("deviceIdentity")) if anti_detect else {},
@@ -269,6 +291,21 @@ def client_for(record, session_string: str | None = None) -> Client:
 
 
 async def disconnect(client: Client | None) -> None:
+    for session_id, entry in list(AI_CLIENTS.items()):
+        if entry["client"] is not client:
+            continue
+        entry["leases"] = max(0, int(entry.get("leases", 0)) - 1)
+        if entry.get("stopRequested") and entry["leases"] == 0:
+            AI_CLIENTS.pop(session_id, None)
+            with suppress(Exception):
+                await client.stop()
+            with suppress(Exception):
+                await entry["pool"].execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'stopped',
+                  "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', session_id)
+        return
+    transient_session = AI_TRANSIENT_CLIENTS.pop(id(client), None) if client else None
+    if transient_session:
+        AI_BUSY_SESSIONS.discard(transient_session)
     if client and client.is_connected:
         with suppress(Exception):
             await client.disconnect()
@@ -386,7 +423,7 @@ async def process_flow(pool, record):
     client = None
     try:
         now = utc_now()
-        if not record["accessKeyId"] or record["revoked"] or not record["messagingAccess"] or (record["keyExpiresAt"] and as_utc(record["keyExpiresAt"]) <= now):
+        if not record["accessKeyId"] or record["revoked"] or not record["messagingAccess"]:
             raise PermissionError("Messaging access is no longer active")
         if as_utc(record["expiresAt"]) <= now:
             raise TimeoutError("Telegram login attempt expired")
@@ -462,13 +499,23 @@ async def campaign_sessions(pool, campaign_id):
 
 
 async def open_campaign_client(record):
-    session_string = canonical_session(decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"])
-    client = client_for(record, session_string)
-    authorized = await asyncio.wait_for(client.connect(), timeout=45)
-    if not authorized:
-        await disconnect(client)
-        raise ValueError("Telegram session is no longer authorized")
-    return client
+    shared = AI_CLIENTS.get(record["id"])
+    if shared and shared["client"].is_connected:
+        shared["leases"] = int(shared.get("leases", 0)) + 1
+        return shared["client"]
+    AI_BUSY_SESSIONS.add(record["id"])
+    try:
+        session_string = canonical_session(decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"])
+        client = client_for(record, session_string)
+        authorized = await asyncio.wait_for(client.connect(), timeout=45)
+        if not authorized:
+            await disconnect(client)
+            raise ValueError("Telegram session is no longer authorized")
+        AI_TRANSIENT_CLIENTS[id(client)] = record["id"]
+        return client
+    except Exception:
+        AI_BUSY_SESSIONS.discard(record["id"])
+        raise
 
 
 async def claim_spam_check(pool):
@@ -677,15 +724,36 @@ def parse_mode(value):
 
 async def settle_campaign_quota(pool, campaign_id):
     async with pool.acquire() as connection, connection.transaction():
-        campaign = await connection.fetchrow('''SELECT "accessKeyId", "reservedMessages", "sentCount", "quotaSettled"
+        campaign = await connection.fetchrow('''SELECT "accountId", "accessKeyId", "reservedMessages", "sentCount",
+          "quotaSettled", "reservedCredits", "creditItemCost", "creditsSettled", configuration
           FROM "TelegramCampaign" WHERE id = $1 FOR UPDATE''', campaign_id)
-        if not campaign or campaign["quotaSettled"]:
+        if not campaign:
             return
         refund = max(0, campaign["reservedMessages"] - campaign["sentCount"])
-        if campaign["accessKeyId"] and refund:
+        if not campaign["quotaSettled"] and campaign["accessKeyId"] and refund:
             await connection.execute('''UPDATE "ValidatorAccessKey" SET "messagesUsed" = GREATEST(0, "messagesUsed" - $2)
               WHERE id = $1''', campaign["accessKeyId"], refund)
-        await connection.execute('UPDATE "TelegramCampaign" SET "quotaSettled" = TRUE WHERE id = $1', campaign_id)
+        if not campaign["creditsSettled"]:
+            pricing = json_value(json_value(campaign["configuration"]).get("creditPricing", {}))
+            item_cost = max(0, int(pricing.get("itemCost", campaign["creditItemCost"])))
+            item_unit = max(1, int(pricing.get("itemUnit", 1)))
+            reserved_variable = math.ceil(campaign["reservedMessages"] / item_unit) * item_cost
+            sent_variable = math.ceil(campaign["sentCount"] / item_unit) * item_cost if campaign["sentCount"] else 0
+            credit_refund = min(campaign["reservedCredits"], max(0, reserved_variable - sent_variable))
+            if credit_refund:
+                balance = await connection.fetchval('''UPDATE "ValidatorAccount" SET
+                  "creditsBalance" = "creditsBalance" + $2,
+                  "creditsSpent" = GREATEST(0, "creditsSpent" - $2), "updatedAt" = NOW()
+                  WHERE id = $1 RETURNING "creditsBalance"''', campaign["accountId"], credit_refund)
+                await connection.execute('''INSERT INTO "ValidatorCreditTransaction"
+                  (id, "accountId", "accessKeyId", amount, "balanceAfter", kind, "taskCode", description,
+                   "referenceType", "referenceId", metadata, "createdAt")
+                  VALUES ($1,$2,$3,$4,$5,'refund','campaign_send',$6,'telegram_campaign',$7,$8::jsonb,NOW())''',
+                  f"vct_{uuid.uuid4().hex}", campaign["accountId"], campaign["accessKeyId"], credit_refund,
+                  balance, "Refund for unsent Telegram attempts", campaign_id,
+                  json.dumps({"unsentAttempts": refund}))
+        await connection.execute('''UPDATE "TelegramCampaign" SET "quotaSettled" = TRUE,
+          "creditsSettled" = TRUE WHERE id = $1''', campaign_id)
 
 
 async def process_campaign(pool, campaign):
@@ -713,7 +781,7 @@ async def process_campaign(pool, campaign):
               "lastProgressAt" = NOW() WHERE id = $1''', campaign["id"], pending)
             return
         now = utc_now()
-        if not campaign.get("accessKeyId") or campaign.get("keyRevoked") or not campaign.get("keyMessagingAccess") or (campaign.get("keyExpiresAt") and as_utc(campaign["keyExpiresAt"]) <= now):
+        if not campaign.get("accessKeyId") or campaign.get("keyRevoked") or not campaign.get("keyMessagingAccess"):
             raise PermissionError("Messaging access is no longer active")
         sessions = await campaign_sessions(pool, campaign["id"])
         if not sessions:
@@ -1088,7 +1156,7 @@ async def claim_schedule(pool):
 async def materialize_schedule(pool, schedule):
     try:
         now = utc_now()
-        if not schedule.get("accessKeyId") or schedule.get("keyRevoked") or not schedule.get("keyMessagingAccess") or (schedule.get("keyExpiresAt") and as_utc(schedule["keyExpiresAt"]) <= now):
+        if not schedule.get("accessKeyId") or schedule.get("keyRevoked") or not schedule.get("keyMessagingAccess"):
             await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_access\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
             return
         session_ids = json.loads(schedule["sessionIds"]) if isinstance(schedule["sessionIds"], str) else schedule["sessionIds"]
@@ -1198,23 +1266,50 @@ async def materialize_schedule(pool, schedule):
             session_id = transmission.get("sessionId")
             if session_id:
                 assigned_counts[session_id] = assigned_counts.get(session_id, 0) + 1
+        raw_credit_settings = await pool.fetchval('SELECT value FROM "Setting" WHERE key = \'validator_credit_settings_json\'')
+        credit_settings = json_value(raw_credit_settings) if raw_credit_settings else {}
+        task_price = json_value(credit_settings.get("tasks", {}).get("campaign_send", {}))
+        base_cost = max(0, int(task_price.get("baseCost", 5)))
+        item_cost = max(0, int(task_price.get("itemCost", 2)))
+        item_unit = max(1, int(task_price.get("itemUnit", 1)))
+        session_cost = max(0, int(task_price.get("sessionCost", 1)))
+        if task_price.get("enabled", True) is False:
+            await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_task\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
+            return
+        credits_required = base_cost + math.ceil(len(transmissions) / item_unit) * item_cost + len(session_ids) * session_cost
+        configuration["creditPricing"] = {
+            "baseCost": base_cost, "itemCost": item_cost, "itemUnit": item_unit,
+            "sessionCost": session_cost, "enabled": task_price.get("enabled", True),
+        }
         async with pool.acquire() as connection, connection.transaction():
-            reserved = await connection.fetchrow('''UPDATE "ValidatorAccessKey"
-              SET "messagesUsed" = "messagesUsed" + $2 WHERE id = $1 AND revoked = FALSE
-              AND "messagingAccess" = TRUE AND ("expiresAt" IS NULL OR "expiresAt" > NOW())
-              AND ("messageLimit" IS NULL OR "messagesUsed" + $2 <= "messageLimit") RETURNING id''',
-              schedule["accessKeyId"], len(transmissions))
-            if not reserved:
+            reserved = await connection.fetchrow('''UPDATE "ValidatorAccount" SET
+              "creditsBalance" = "creditsBalance" - $2, "creditsSpent" = "creditsSpent" + $2,
+              "updatedAt" = NOW() WHERE id = $1 AND active = TRUE AND "creditsBalance" >= $2
+              AND ("planExpiresAt" IS NULL OR "planExpiresAt" > NOW()
+                OR "lastCreditTopupAt" > "planExpiresAt") RETURNING "creditsBalance"''',
+              schedule["accountId"], credits_required)
+            if credits_required and not reserved:
                 await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_quota\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
                 return
+            await connection.execute('''UPDATE "ValidatorAccessKey" SET "messagesUsed" = "messagesUsed" + $2
+              WHERE id = $1 AND revoked = FALSE AND "messagingAccess" = TRUE''',
+              schedule["accessKeyId"], len(transmissions))
             await connection.execute('''INSERT INTO "TelegramCampaign"
               (id, "accountId", "accessKeyId", "sourceListId", "scheduleId", name, "targetType", mode,
-               message, "parseMode", status, "totalCount", "sessionCount", "reservedMessages", configuration,
-               "trackReplies", "replyWindowHours", "createdAt", "lastProgressAt")
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12,$11,$13::jsonb,$14,$15,NOW(),NOW())''',
+               message, "parseMode", status, "totalCount", "sessionCount", "reservedMessages", "reservedCredits",
+               "creditItemCost", configuration, "trackReplies", "replyWindowHours", "createdAt", "lastProgressAt")
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12,$11,$13,$14,$15::jsonb,$16,$17,NOW(),NOW())''',
               campaign_id, schedule["accountId"], schedule["accessKeyId"], schedule["sourceListId"], schedule["id"],
               schedule["name"], schedule["targetType"], schedule["mode"], schedule["message"], schedule["parseMode"],
-              len(transmissions), len(session_ids), json.dumps(configuration), track_replies, reply_window)
+              len(transmissions), len(session_ids), credits_required, item_cost, json.dumps(configuration), track_replies, reply_window)
+            if credits_required:
+                await connection.execute('''INSERT INTO "ValidatorCreditTransaction"
+                  (id, "accountId", "accessKeyId", amount, "balanceAfter", kind, "taskCode", description,
+                   "referenceType", "referenceId", metadata, "createdAt")
+                  VALUES ($1,$2,$3,$4,$5,'debit','campaign_send',$6,'telegram_campaign',$7,$8::jsonb,NOW())''',
+                  f"vct_{uuid.uuid4().hex}", schedule["accountId"], schedule["accessKeyId"], -credits_required,
+                  reserved["creditsBalance"], f"{len(transmissions)} scheduled Telegram message attempts", campaign_id,
+                  json.dumps({"attempts": len(transmissions), "sessions": len(session_ids), "scheduleId": schedule["id"]}))
             await connection.executemany('''INSERT INTO "TelegramCampaignSession"
               ("campaignId", "sessionId", position, "assignedCount") VALUES ($1,$2,$3,$4)''',
               [(campaign_id, session_id, position, assigned_counts.get(session_id, 0)) for position, session_id in enumerate(session_ids)])
@@ -1235,10 +1330,593 @@ async def materialize_schedule(pool, schedule):
         await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_error\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
 
 
+class AiProviderError(Exception):
+    def __init__(self, message, status=None, data=None):
+        super().__init__(message)
+        self.status = status
+        self.data = data
+        self.transient = status is None or status == 429 or (status is not None and status >= 500)
+
+
+def ai_config(account_config, session_config):
+    account = json_value(account_config)
+    session = json_value(session_config)
+    merged = {**account, **session}
+    merged["capitalbot"] = {**json_value(account.get("capitalbot")), **json_value(session.get("capitalbot"))}
+    merged["cupidbot"] = {**json_value(account.get("cupidbot")), **json_value(session.get("cupidbot"))}
+    merged["provider"] = str(merged.get("provider") or "capitalbot").lower()
+    merged["replyDelayMs"] = max(0, min(60000, int(merged.get("replyDelayMs", 3000))))
+    merged["replyDelayJitterMs"] = max(0, min(60000, int(merged.get("replyDelayJitterMs", 2000))))
+    merged["memoryMessageLimit"] = max(10, min(200, int(merged.get("memoryMessageLimit", 100))))
+    return merged
+
+
+def _request_json_sync(url, body):
+    payload = json.dumps(body).encode()
+    request = Request(url, payload, {"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=60) as response:
+            raw = response.read().decode()
+            return response.status, json.loads(raw) if raw.strip() else None
+    except HTTPError as error:
+        raw = error.read().decode(errors="replace")
+        try:
+            data = json.loads(raw) if raw.strip() else None
+        except json.JSONDecodeError:
+            data = {"message": raw[:2000]}
+        return error.code, data
+
+
+async def ai_provider_request(url, body):
+    last_error = None
+    for attempt in range(3):
+        try:
+            status, data = await asyncio.to_thread(_request_json_sync, url, body)
+            if status == 200 and data is not None:
+                return data
+            last_error = AiProviderError(
+                f"Provider returned HTTP {status}: {json.dumps(data)[:1000]}", status, data
+            )
+            if not last_error.transient:
+                raise last_error
+        except AiProviderError:
+            raise
+        except Exception as error:
+            last_error = AiProviderError(str(error))
+        if attempt < 2:
+            await asyncio.sleep(2 ** attempt)
+    raise last_error or AiProviderError("Provider request failed")
+
+
+def capitalbot_category(data):
+    categories = (
+        ("underage", "underage"), ("aiCreditOver", "ai_credit_over"),
+        ("timewaste", "timewaste"), ("tierFiltered", "tier_filtered"),
+        ("genderFiltered", "gender_filtered"), ("messagedAlready", "messaged_already"),
+        ("internalAccount", "internal_account"), ("ignored", "ignored"),
+        ("ppvExhausted", "ppv_exhausted"), ("chatCooldown", "chat_cooldown"),
+    )
+    return next((category for field, category in categories if data.get(field)), None)
+
+
+async def generate_ai_reply(provider, credential, config, session, recipient, messages, is_followup):
+    secret = decrypt(credential["secretEncrypted"]).decode()
+    if provider == "capitalbot":
+        options = json_value(config.get("capitalbot"))
+        peer_id = str(recipient.get("id") or "unknown")
+        history = [{
+            "role": "user" if item.get("isIncoming") else "assistant",
+            "content": str(item.get("msg") or ""),
+            "timestamp": int(int(item.get("timestamp") or int(datetime.now().timestamp() * 1000)) / 1000),
+        } for item in messages[-55:]]
+        body = {
+            "licensekey": secret,
+            "modelId": credential.get("modelId") or options.get("modelId") or 43,
+            "presetId": credential.get("presetId") or options.get("presetId") or 88,
+            "accountId": session["id"],
+            "platform": "Telegram",
+            "conversationSource": "Telegram",
+            "userInfos": {"useridentifier": f"acct{session['id']}_{peer_id}"},
+            "chatHistory": history,
+        }
+        for target, source in (("name", "name"), ("username", "username"), ("location", "location")):
+            if recipient.get(source):
+                body["userInfos"][target] = recipient[source]
+        if session.get("firstName") or session.get("lastName"):
+            body["modelName"] = " ".join(filter(None, [session.get("firstName"), session.get("lastName")]))
+        for field in (
+            "city", "modelName", "modelAge", "chattingStyle", "appearance", "hobbies", "ctaInfo",
+            "dayTimeActivity", "nightTimeActivity", "language", "photoRate", "interestLevel", "phaseGoal",
+            "matchLocation", "timezone", "outfit", "livePhotoSource", "detectLanguage", "audio", "video",
+            "image", "affiliate",
+        ):
+            if options.get(field) is not None:
+                body[field] = options[field]
+        data = await ai_provider_request(AI_CAPITALBOT_ENDPOINT, body)
+        content = data.get("content") if isinstance(data.get("content"), list) else []
+        text = "\n".join(str(item.get("content")) for item in content if item.get("type") == "text" and item.get("content")) or None
+        return {
+            "text": text, "category": capitalbot_category(data), "didConvert": bool(data.get("converted")),
+            "meta": {"contentTypes": [item.get("type") for item in content], "converted": bool(data.get("converted"))},
+        }
+
+    options = json_value(config.get("cupidbot"))
+    confirmed_index = -1
+    for index, item in enumerate(messages):
+        if not item.get("isIncoming") and item.get("confirmed") is True:
+            confirmed_index = index
+    exchange = [] if is_followup else messages[confirmed_index + 1:]
+    payload_messages = [{
+        "id": str(item.get("id") or item.get("telegramMessageId") or ""),
+        "timestamp": int(int(item.get("timestamp") or int(datetime.now().timestamp() * 1000)) / 1000),
+        "msg": str(item.get("msg") or ""),
+        "isIncoming": bool(item.get("isIncoming")),
+        "medias": [],
+    } for item in exchange]
+    model_name = " ".join(filter(None, [session.get("firstName"), session.get("lastName")])) or options.get("name") or "Model"
+    body = {
+        "accessToken": secret, "version": "0.19.0", "manifestVersion": "0.19.0", "isAPI": True,
+        "app": "telegram", "brand": options.get("brand", "cupidbotofm"), "product": options.get("product", "ofm-tg"),
+        "isOF": options.get("isOF", True), "isFemale": True, "accountID": session["id"],
+        "platformSource": "telegram", "responseLanguageCode": "en", "responseLanguage": "english",
+        "isFollowUp": is_followup, "name": model_name, "age": options.get("age", 25),
+        "userInfo": options.get("userInfo", f"Your name is {model_name}. You are friendly and engaging."),
+        "city": options.get("city") or recipient.get("location") or "New York",
+        "ctaInfo": options.get("ctaInfo", "Page subscription details will be provided later"),
+        "chooseRandomCTA": False, "useDefaultSettings": True, "showAdvancedSettings": False,
+        "ctaData": options.get("ctaData", [{"platform": "onlyfans", "cta": "check my link"}]),
+        "settingDayInfo": options.get("settingDayInfo", "Just lounging around, waiting for a reply"),
+        "settingNightInfo": options.get("settingNightInfo", "Just winding down, waiting for a reply"),
+        "chatStyle": options.get("chatStyle", "youth"),
+        "recipient": {key: str(recipient.get(key) or "") for key in ("id", "name", "username", "bio", "location")},
+        "messages": payload_messages,
+    }
+    data = await ai_provider_request(AI_CUPIDBOT_ENDPOINT, body)
+    option = None
+    if isinstance(data.get("options"), list) and data["options"] and isinstance(data["options"][0], list) and data["options"][0]:
+        option = data["options"][0][0]
+    return {
+        "text": option.get("msg") if isinstance(option, dict) else None,
+        "category": data.get("category"), "didConvert": bool(data.get("didConvert")),
+        "meta": {"category": data.get("category"), "didConvert": bool(data.get("didConvert")), "rateLimit": data.get("rateLimit")},
+    }
+
+
+AI_GHOSTING = {
+    "underage", "timewaste", "tier_filtered", "gender_filtered", "ppv_exhausted", "isTmpGhosted",
+    "stopMessaging", "wordSpam", "promptSpam", "charSpam", "glitchedText", "tooLong", "filteredGender",
+    "filteredTier", "botRecipient", "ghostAfterMassMessage",
+}
+AI_NOT_OUR_TURN = {
+    "messaged_already", "internal_account", "ignored", "chat_cooldown", "ai_credit_over", "notOurTurn",
+    "messagingFromAnotherAccount",
+}
+
+
+async def append_ai_message(connection, record, peer_id, item, recipient=None, limit=100):
+    row = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
+      WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', record["id"], peer_id)
+    messages = json_list(row["messages"]) if row else []
+    message_id = str(item.get("telegramMessageId") or item.get("id") or "")
+    if message_id and any(str(value.get("telegramMessageId") or value.get("id") or "") == message_id for value in messages):
+        return False
+    messages = (messages + [item])[-limit:]
+    incoming_at = utc_now().replace(tzinfo=None) if item.get("isIncoming") else None
+    outgoing_at = utc_now().replace(tzinfo=None) if not item.get("isIncoming") else None
+    if row:
+        await connection.execute('''UPDATE "AiChatMemory" SET messages = $2::jsonb,
+          recipient = COALESCE($3::jsonb, recipient), "lastIncomingAt" = COALESCE($4, "lastIncomingAt"),
+          "lastOutgoingAt" = COALESCE($5, "lastOutgoingAt"),
+          reengage = CASE WHEN $4 IS NULL THEN reengage ELSE '{}'::jsonb END, "updatedAt" = NOW()
+          WHERE id = $1''', row["id"], json.dumps(messages), json.dumps(recipient) if recipient else None,
+          incoming_at, outgoing_at)
+    else:
+        await connection.execute('''INSERT INTO "AiChatMemory"
+          (id, "accountId", "sessionId", "peerId", recipient, messages, "lastIncomingAt", "lastOutgoingAt", "createdAt", "updatedAt")
+          VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,NOW(),NOW())''', f"aim_{uuid.uuid4().hex}", record["accountId"],
+          record["id"], peer_id, json.dumps(recipient) if recipient else None, json.dumps(messages), incoming_at, outgoing_at)
+    return True
+
+
+async def ingest_ai_message(pool, record, message):
+    user = getattr(message, "from_user", None)
+    chat = getattr(message, "chat", None)
+    if not user or getattr(user, "is_bot", False) or getattr(user, "is_self", False) or int(user.id) == 777000:
+        return
+    text = (getattr(message, "text", None) or getattr(message, "caption", None) or "").strip()
+    if not text and not getattr(message, "media", None):
+        return
+    peer_id = int(user.id)
+    recipient = {
+        "id": str(peer_id), "name": " ".join(filter(None, [user.first_name, user.last_name])),
+        "username": user.username or "", "bio": "", "location": "",
+    }
+    settings = await pool.fetchrow('''SELECT a.config AS "accountConfig", s.config AS "sessionConfig"
+      FROM "AiSessionSetting" s JOIN "AiAccountSetting" a ON a."accountId" = s."accountId"
+      LEFT JOIN "AiChatSetting" c ON c."sessionId" = s."sessionId" AND c."peerId" = $2
+      WHERE s."sessionId" = $1 AND s.enabled = TRUE AND a.enabled = TRUE AND COALESCE(c.enabled, TRUE) = TRUE''',
+      record["id"], peer_id)
+    if not settings:
+        return
+    config = ai_config(settings["accountConfig"], settings["sessionConfig"])
+    timestamp = getattr(message, "date", None)
+    timestamp_ms = int(as_utc(timestamp).timestamp() * 1000) if timestamp else int(datetime.now().timestamp() * 1000)
+    item = {
+        "id": f"tg-{message.id}", "telegramMessageId": int(message.id), "timestamp": timestamp_ms,
+        "msg": text or "[media]", "isIncoming": True, "medias": [],
+    }
+    delay_ms = config["replyDelayMs"] + int(random_between(0, config["replyDelayJitterMs"]))
+    run_after = (utc_now() + timedelta(milliseconds=delay_ms)).replace(tzinfo=None)
+    async with pool.acquire() as connection, connection.transaction():
+        appended = await append_ai_message(connection, record, peer_id, item, recipient, config["memoryMessageLimit"])
+        if not appended:
+            return
+        pending = await connection.fetchrow('''SELECT id FROM "AiChatJob" WHERE "sessionId" = $1 AND "peerId" = $2
+          AND status = 'pending' ORDER BY "createdAt" DESC FOR UPDATE LIMIT 1''', record["id"], peer_id)
+        if pending:
+            await connection.execute('''UPDATE "AiChatJob" SET "incomingMsgId" = $2, "requestPayload" = $3::jsonb,
+              "runAfter" = $4, "updatedAt" = NOW() WHERE id = $1''', pending["id"], int(message.id),
+              json.dumps({"incomingText": item["msg"], "recipient": recipient}), run_after)
+        else:
+            await connection.execute('''INSERT INTO "AiChatJob"
+              (id, "accountId", "sessionId", "peerId", "incomingMsgId", status, "requestPayload", "runAfter", "createdAt", "updatedAt")
+              VALUES ($1,$2,$3,$4,$5,'pending',$6::jsonb,$7,NOW(),NOW()) ON CONFLICT ("sessionId", "incomingMsgId") DO NOTHING''',
+              f"aij_{uuid.uuid4().hex}", record["accountId"], record["id"], peer_id, int(message.id),
+              json.dumps({"incomingText": item["msg"], "recipient": recipient}), run_after)
+    await pool.execute('UPDATE "TelegramSession" SET "repliesReceived" = "repliesReceived" + 1, "lastActiveAt" = NOW() WHERE id = $1', record["id"])
+
+
+async def run_ai_catchup(pool, record, client):
+    try:
+        cutoff = utc_now() - timedelta(hours=AI_CATCHUP_HOURS)
+        enqueued = 0
+        async for dialog in client.get_dialogs(limit=AI_CATCHUP_DIALOG_LIMIT):
+            if enqueued >= AI_CATCHUP_MAX_CHATS:
+                break
+            chat = dialog.chat
+            message = dialog.top_message
+            if not chat or getattr(chat, "type", None) != enums.ChatType.PRIVATE or getattr(chat, "is_bot", False):
+                continue
+            if not message or message.outgoing or not message.date or as_utc(message.date) < cutoff:
+                continue
+            before = await pool.fetchval('SELECT COUNT(*) FROM "AiChatJob" WHERE "sessionId" = $1', record["id"])
+            await ingest_ai_message(pool, record, message)
+            after = await pool.fetchval('SELECT COUNT(*) FROM "AiChatJob" WHERE "sessionId" = $1', record["id"])
+            if after > before:
+                enqueued += 1
+                await asyncio.sleep(0.5)
+        log.info("AI catch-up %s enqueued=%s", record["id"], enqueued)
+    except Exception as error:
+        log.warning("AI catch-up %s failed: %s", record["id"], error)
+    finally:
+        await pool.execute('''UPDATE "AiSessionSetting" SET "catchupRequested" = FALSE,
+          "catchupClaimedAt" = NULL, "updatedAt" = NOW() WHERE "sessionId" = $1''', record["id"])
+
+
+async def start_ai_client(pool, record):
+    client = None
+    try:
+        session_string = canonical_session(decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"])
+        client = client_for(record, session_string, updates=True)
+
+        async def incoming(_client, message):
+            try:
+                await ingest_ai_message(pool, record, message)
+            except Exception:
+                log.exception("AI incoming handler failed for %s", record["id"])
+
+        client.add_handler(MessageHandler(incoming, filters.private & filters.incoming))
+        await asyncio.wait_for(client.start(), timeout=60)
+        AI_CLIENTS[record["id"]] = {
+            "client": client, "record": record, "pool": pool, "leases": 0, "stopRequested": False,
+        }
+        await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'listening',
+          "lastConnectedAt" = NOW(), "lastHeartbeatAt" = NOW(), "lastError" = NULL, "updatedAt" = NOW()
+          WHERE "sessionId" = $1''', record["id"])
+        log.info("AI listener started for %s", record["id"])
+        if record.get("catchupRequested"):
+            task = asyncio.create_task(run_ai_catchup(pool, record, client), name=f"catchup:{record['id']}")
+            AI_CATCHUP_TASKS.add(task)
+            task.add_done_callback(AI_CATCHUP_TASKS.discard)
+    except Exception as error:
+        await disconnect(client)
+        await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'error', "lastError" = $2,
+          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', record["id"], str(error)[:2000])
+        log.warning("AI listener %s failed: %s", record["id"], error)
+
+
+async def stop_ai_client(pool, session_id, status="stopped"):
+    entry = AI_CLIENTS.get(session_id)
+    if entry:
+        if int(entry.get("leases", 0)) > 0:
+            entry["stopRequested"] = True
+            status = "stopping"
+        else:
+            AI_CLIENTS.pop(session_id, None)
+            with suppress(Exception):
+                await entry["client"].stop()
+    await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = $2,
+      "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', session_id, status)
+
+
+async def reconcile_ai_clients(pool):
+    rows = await pool.fetch('''SELECT s.*, c."apiId", c."apiHashEncrypted", a."catchupRequested"
+      FROM "AiSessionSetting" a JOIN "AiAccountSetting" aa ON aa."accountId" = a."accountId"
+      JOIN "TelegramSession" s ON s.id = a."sessionId"
+      JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
+      WHERE a.enabled = TRUE AND aa.enabled = TRUE AND s.status = 'active' AND s."isLoggedIn" = TRUE
+        AND s."spamStatus" <> 'frozen'
+        AND (a."runtimeStatus" <> 'error' OR a."lastHeartbeatAt" IS NULL
+          OR a."lastHeartbeatAt" < NOW() - INTERVAL '1 minute')''')
+    wanted = {row["id"]: dict(row) for row in rows}
+    for session_id in list(AI_CLIENTS):
+        entry = AI_CLIENTS[session_id]
+        if session_id not in wanted or not entry["client"].is_connected:
+            await stop_ai_client(pool, session_id, "stopped" if session_id not in wanted else "error")
+    for session_id, record in wanted.items():
+        if session_id in AI_BUSY_SESSIONS:
+            continue
+        if session_id not in AI_CLIENTS:
+            await start_ai_client(pool, record)
+        else:
+            await pool.execute('UPDATE "AiSessionSetting" SET "lastHeartbeatAt" = NOW() WHERE "sessionId" = $1', session_id)
+            if record.get("catchupRequested") and not any(
+                task.get_name() == f"catchup:{session_id}" for task in AI_CATCHUP_TASKS if not task.done()
+            ):
+                task = asyncio.create_task(run_ai_catchup(pool, record, AI_CLIENTS[session_id]["client"]), name=f"catchup:{session_id}")
+                AI_CATCHUP_TASKS.add(task)
+                task.add_done_callback(AI_CATCHUP_TASKS.discard)
+
+
+async def claim_ai_job(pool):
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow('''SELECT * FROM "AiChatJob" WHERE status = 'pending' AND "runAfter" <= NOW()
+          AND NOT EXISTS (SELECT 1 FROM "AiChatJob" active WHERE active.status = 'processing'
+            AND active."sessionId" = "AiChatJob"."sessionId" AND active."peerId" = "AiChatJob"."peerId")
+          ORDER BY "runAfter", "createdAt" FOR UPDATE SKIP LOCKED LIMIT 1''')
+        if row:
+            await connection.execute('''UPDATE "AiChatJob" SET status = 'processing', attempts = attempts + 1,
+              "claimedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', row["id"])
+        return dict(row) if row else None
+
+
+async def ai_log(pool, job, provider, status, *, response=None, text=None, category=None, outgoing_id=None, error=None):
+    request = json_value(job.get("requestPayload"))
+    await pool.execute('''INSERT INTO "AiResponseLog"
+      (id, "accountId", "sessionId", "jobId", "peerId", "incomingMsgId", "outgoingMsgId", provider,
+       status, category, "incomingText", "responseText", "isFollowUp", "didConvert", "errorCode",
+       "errorMessage", "providerMeta", "createdAt")
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,NOW())''',
+      f"ail_{uuid.uuid4().hex}", job["accountId"], job["sessionId"], job["id"], job["peerId"],
+      job.get("incomingMsgId"), outgoing_id, provider, status, category, request.get("incomingText"), text,
+      bool(job.get("isFollowUp")), bool(response and response.get("didConvert")), error_code(error) if error else None,
+      str(error)[:2000] if error else None, json.dumps(response.get("meta")) if response else None)
+
+
+async def finish_ai_job(pool, job, status, result=None, error=None, retry=False):
+    if retry and int(job["attempts"] or 0) + 1 < int(job["maxAttempts"] or 3):
+        delay = 2 ** int(job["attempts"] or 0)
+        await pool.execute('''UPDATE "AiChatJob" SET status = 'pending', "runAfter" = NOW() + ($2 * INTERVAL '1 second'),
+          "errorCode" = $3, "errorMessage" = $4, "claimedAt" = NULL, "updatedAt" = NOW() WHERE id = $1''',
+          job["id"], delay, error_code(error), str(error)[:2000])
+        return
+    await pool.execute('''UPDATE "AiChatJob" SET status = $2, "resultPayload" = $3::jsonb,
+      "errorCode" = $4, "errorMessage" = $5, "finishedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+      job["id"], status, json.dumps(result) if result else None, error_code(error) if error else None,
+      str(error)[:2000] if error else None)
+
+
+async def cancel_covered_ai_jobs(pool, job, incoming_id):
+    if incoming_id is None:
+        return
+    await pool.execute('''UPDATE "AiChatJob" SET status = 'cancelled', "finishedAt" = NOW(),
+      "resultPayload" = '{"reason":"coalesced_into_previous_reply"}'::jsonb, "updatedAt" = NOW()
+      WHERE "sessionId" = $1 AND "peerId" = $2 AND status = 'pending'
+        AND "incomingMsgId" IS NOT NULL AND "incomingMsgId" <= $3''',
+      job["sessionId"], job["peerId"], incoming_id)
+
+
+async def confirm_ai_outgoing_messages(pool, job):
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
+          WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', job["sessionId"], job["peerId"])
+        if not row:
+            return
+        messages = [
+            {**item, "confirmed": True} if not item.get("isIncoming") else item
+            for item in json_list(row["messages"])
+        ]
+        await connection.execute('UPDATE "AiChatMemory" SET messages = $2::jsonb, "updatedAt" = NOW() WHERE id = $1',
+          row["id"], json.dumps(messages))
+
+
+async def process_ai_job(pool, job):
+    provider = "capitalbot"
+    try:
+        context = await pool.fetchrow('''SELECT j.*, s.label, s."firstName", s."lastName", s.username,
+          s.status AS "sessionStatus", s."isLoggedIn", s."spamStatus", ss.enabled AS "sessionEnabled",
+          ss.config AS "sessionConfig", aa.enabled AS "accountEnabled", aa.config AS "accountConfig"
+          FROM "AiChatJob" j JOIN "TelegramSession" s ON s.id = j."sessionId"
+          JOIN "AiSessionSetting" ss ON ss."sessionId" = s.id
+          JOIN "AiAccountSetting" aa ON aa."accountId" = j."accountId" WHERE j.id = $1''', job["id"])
+        if not context or not context["accountEnabled"] or not context["sessionEnabled"]:
+            await finish_ai_job(pool, job, "cancelled")
+            return
+        if context["sessionStatus"] != "active" or not context["isLoggedIn"] or context["spamStatus"] == "frozen":
+            raise RuntimeError("AI session is not available")
+        chat_enabled = await pool.fetchval('''SELECT enabled FROM "AiChatSetting"
+          WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"])
+        if chat_enabled is False:
+            await finish_ai_job(pool, job, "cancelled")
+            return
+        config = ai_config(context["accountConfig"], context["sessionConfig"])
+        provider = config["provider"]
+        credential_row = await pool.fetchrow('''SELECT * FROM "AiProviderCredential"
+          WHERE "accountId" = $1 AND provider = $2 AND "isValid" = TRUE''', job["accountId"], provider)
+        if not credential_row:
+            raise ValueError(f"No valid {provider} credential is configured")
+        credential = dict(credential_row)
+        memory = await pool.fetchrow('''SELECT * FROM "AiChatMemory" WHERE "sessionId" = $1 AND "peerId" = $2''',
+          job["sessionId"], job["peerId"])
+        if not memory:
+            raise ValueError("Conversation memory is empty")
+        messages = json_list(memory["messages"])[-config["memoryMessageLimit"]:]
+        recipient = json_value(memory["recipient"])
+        covered_incoming_id = max(
+            (int(item["telegramMessageId"]) for item in messages
+             if item.get("isIncoming") and item.get("telegramMessageId") is not None),
+            default=None,
+        )
+        telegram_session = {
+            **dict(context),
+            "id": context["sessionId"],
+        }
+        response = await generate_ai_reply(
+            provider, credential, config, telegram_session, recipient, messages, bool(job["isFollowUp"])
+        )
+        await cancel_covered_ai_jobs(pool, job, covered_incoming_id)
+        if provider == "cupidbot":
+            await confirm_ai_outgoing_messages(pool, job)
+        category = response.get("category")
+        if category in AI_NOT_OUR_TURN:
+            await ai_log(pool, job, provider, "not_our_turn", response=response, category=category)
+            await finish_ai_job(pool, job, "not_our_turn", response)
+            return
+        if category in AI_GHOSTING:
+            await pool.execute('''UPDATE "AiChatMemory" SET "conversationState" = 'ghosted', "lastCategory" = $3,
+              "updatedAt" = NOW() WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"], category)
+            await ai_log(pool, job, provider, "ghosting", response=response, category=category)
+            await finish_ai_job(pool, job, "ghosting", response)
+            return
+        text = str(response.get("text") or "").strip()
+        if not text:
+            status = "converted" if response.get("didConvert") else "no_reply"
+            await ai_log(pool, job, provider, status, response=response, category=category)
+            await finish_ai_job(pool, job, status, response)
+            return
+        latest_memory = await pool.fetchval('''SELECT messages FROM "AiChatMemory"
+          WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"])
+        latest_incoming_id = max(
+            (int(item["telegramMessageId"]) for item in json_list(latest_memory)
+             if item.get("isIncoming") and item.get("telegramMessageId") is not None),
+            default=None,
+        )
+        if covered_incoming_id is not None and latest_incoming_id is not None and latest_incoming_id > covered_incoming_id:
+            await ai_log(pool, job, provider, "superseded", response=response, text=text, category=category)
+            await finish_ai_job(pool, job, "superseded", {**response, "reason": "newer_incoming_message"})
+            return
+        entry = AI_CLIENTS.get(job["sessionId"])
+        if not entry or not entry["client"].is_connected:
+            raise ConnectionError("AI listener is not connected")
+        sent = await asyncio.wait_for(entry["client"].send_message(int(job["peerId"]), text, parse_mode=enums.ParseMode.DISABLED), timeout=45)
+        outgoing = {
+            "id": f"tg-ai-{sent.id}", "telegramMessageId": int(sent.id),
+            "timestamp": int(datetime.now().timestamp() * 1000), "msg": text, "isIncoming": False,
+            "medias": [], "confirmed": False,
+        }
+        async with pool.acquire() as connection, connection.transaction():
+            current = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
+              WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', job["sessionId"], job["peerId"])
+            stored = json_list(current["messages"])
+            if provider == "cupidbot":
+                stored = [{**item, "confirmed": True} if not item.get("isIncoming") else item for item in stored]
+            stored = (stored + [outgoing])[-config["memoryMessageLimit"]:]
+            await connection.execute('''UPDATE "AiChatMemory" SET messages = $2::jsonb, "conversationState" = 'active',
+              "lastCategory" = $3, "lastOutgoingAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+              current["id"], json.dumps(stored), category)
+            await connection.execute('''UPDATE "TelegramSession" SET "messagesSent" = "messagesSent" + 1,
+              "lastActiveAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', job["sessionId"])
+        await ai_log(pool, job, provider, "sent", response=response, text=text, category=category, outgoing_id=int(sent.id))
+        await finish_ai_job(pool, job, "sent", {**response, "text": text, "outgoingMessageId": int(sent.id)})
+    except Exception as error:
+        retry = isinstance(error, (ConnectionError, TimeoutError, FloodWait)) or (isinstance(error, AiProviderError) and error.transient)
+        if isinstance(error, (FloodWait, PeerFlood, *SESSION_DEAD_ERRORS)):
+            session = AI_CLIENTS.get(job["sessionId"], {}).get("record")
+            if session:
+                await record_session_signal(pool, session, None, error, getattr(error, "value", 0))
+        await ai_log(pool, job, provider, "failed", error=error)
+        await finish_ai_job(pool, job, "failed", error=error, retry=retry)
+        log.warning("AI job %s failed: %s", job["id"], error)
+
+
+async def ai_job_worker(pool):
+    while True:
+        job = await claim_ai_job(pool)
+        if job:
+            await process_ai_job(pool, job)
+        else:
+            await asyncio.sleep(0.5)
+
+
+async def scan_ai_reengagement(pool):
+    rows = await pool.fetch('''SELECT m.*, aa.config AS "accountConfig", ss.config AS "sessionConfig"
+      FROM "AiChatMemory" m JOIN "AiSessionSetting" ss ON ss."sessionId" = m."sessionId"
+      JOIN "AiAccountSetting" aa ON aa."accountId" = m."accountId"
+      LEFT JOIN "AiChatSetting" cs ON cs."sessionId" = m."sessionId" AND cs."peerId" = m."peerId"
+      WHERE aa.enabled = TRUE AND aa."reengageEnabled" = TRUE AND ss.enabled = TRUE AND COALESCE(cs.enabled, TRUE) = TRUE
+        AND m."conversationState" = 'active' AND m."lastOutgoingAt" > NOW() - INTERVAL '24 hours'
+        AND m."lastOutgoingAt" < NOW() - INTERVAL '30 minutes'
+        AND NOT EXISTS (SELECT 1 FROM "AiChatJob" j WHERE j."sessionId" = m."sessionId" AND j."peerId" = m."peerId"
+          AND j.status IN ('pending','processing')) ORDER BY m."lastOutgoingAt" LIMIT 8''')
+    for row in rows:
+        messages = json_list(row["messages"])
+        if not messages or messages[-1].get("isIncoming"):
+            continue
+        state = json_value(row["reengage"])
+        count = int(state.get("count", 0))
+        if count >= 3:
+            continue
+        wait_minutes = float(
+            state.get("waitMinutes")
+            or (random_between(30, 60) if count == 0 else random_between(120, 240))
+        )
+        reference = datetime.fromtimestamp(float(state.get("lastNudgeAt", 0)) / 1000, timezone.utc) if state.get("lastNudgeAt") else as_utc(row["lastOutgoingAt"])
+        if utc_now() - reference < timedelta(minutes=wait_minutes):
+            if not state.get("waitMinutes"):
+                await pool.execute('UPDATE "AiChatMemory" SET reengage = $2::jsonb WHERE id = $1', row["id"], json.dumps({**state, "waitMinutes": wait_minutes}))
+            continue
+        await pool.execute('''INSERT INTO "AiChatJob"
+          (id, "accountId", "sessionId", "peerId", status, "isFollowUp", "requestPayload", "runAfter", "createdAt", "updatedAt")
+          VALUES ($1,$2,$3,$4,'pending',TRUE,$5::jsonb,NOW(),NOW(),NOW())''', f"aij_{uuid.uuid4().hex}", row["accountId"],
+          row["sessionId"], row["peerId"], json.dumps({"incomingText": None, "recipient": row["recipient"]}))
+        await pool.execute('''UPDATE "AiChatMemory" SET reengage = $2::jsonb WHERE id = $1''', row["id"], json.dumps({
+          "count": count + 1, "lastNudgeAt": int(datetime.now().timestamp() * 1000), "waitMinutes": random_between(120, 240),
+        }))
+        await asyncio.sleep(3)
+
+
+async def ai_runtime(pool):
+    workers = [asyncio.create_task(ai_job_worker(pool), name=f"ai-job-{index}") for index in range(AI_JOB_CONCURRENCY)]
+    last_reconcile = datetime.min.replace(tzinfo=timezone.utc)
+    last_reengage = datetime.min.replace(tzinfo=timezone.utc)
+    try:
+        await pool.execute('''UPDATE "AiChatJob" SET status = 'pending', "claimedAt" = NULL,
+          "runAfter" = NOW(), "updatedAt" = NOW() WHERE status = 'processing' ''')
+        while True:
+            now = utc_now()
+            if (now - last_reconcile).total_seconds() >= AI_RECONCILE_SECONDS:
+                await reconcile_ai_clients(pool)
+                last_reconcile = now
+            if (now - last_reengage).total_seconds() >= 300:
+                await scan_ai_reengagement(pool)
+                last_reengage = now
+            await asyncio.sleep(1)
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        for task in list(AI_CATCHUP_TASKS):
+            task.cancel()
+        await asyncio.gather(*AI_CATCHUP_TASKS, return_exceptions=True)
+        for session_id in list(AI_CLIENTS):
+            await stop_ai_client(pool, session_id)
+
+
 async def main():
     database_url = os.environ["DATABASE_URL"]
-    pool = await asyncpg.create_pool(database_url, min_size=1, max_size=5, command_timeout=60)
+    pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10, command_timeout=60)
     log.info("Hydrogram worker started")
+    ai_task = asyncio.create_task(ai_runtime(pool), name="ai-runtime")
     try:
         interrupted = await pool.fetch('''UPDATE "TelegramCampaign" SET status = 'failed',
           "errorMessage" = 'Worker restarted while this campaign was running', "finishedAt" = NOW(),
@@ -1297,6 +1975,8 @@ async def main():
               WHERE "replyTrackingStatus" = 'tracking' AND "replyTrackingUntil" <= NOW()''')
             await asyncio.sleep(POLL_SECONDS)
     finally:
+        ai_task.cancel()
+        await asyncio.gather(ai_task, return_exceptions=True)
         await pool.close()
 
 

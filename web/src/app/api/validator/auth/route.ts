@@ -13,7 +13,7 @@ export async function POST(request: Request) {
   const key = typeof body?.key === "string" ? body.key.trim() : "";
   if (!key || key.length > 200) return NextResponse.json({ error: "Enter a valid access key" }, { status: 400 });
   const account = await createValidatorSession(key);
-  if (!account) return NextResponse.json({ error: "This access key is invalid, expired, or revoked" }, { status: 401 });
+  if (!account) return NextResponse.json({ error: "This access key is invalid or revoked" }, { status: 401 });
   return NextResponse.json({ authenticated: true, account });
 }
 

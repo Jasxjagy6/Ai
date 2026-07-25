@@ -33,6 +33,41 @@ services:
       AI_MODEL: aria
       ADMIN_EMAIL: admin@aria.chat
       PAYMENT_PROVIDER: razorpay
+      VALIDATOR_PUBLIC_URL: ${VALIDATOR_PUBLIC_URL:-https://play-casino.me}
+      LINK_FILTER_WORKER: "false"
+    volumes:
+      - ./web/uploads:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  validator-web:
+    build:
+      context: ./web
+      dockerfile: Dockerfile
+    network_mode: host
+    env_file:
+      - ./web/.env
+    environment:
+      DATABASE_URL: postgresql://aria:aria_dev_2026@localhost:5433/aria_db
+      HOSTNAME: 0.0.0.0
+      PORT: 3100
+      AUTH_SECRET: ${AUTH_SECRET:-dev-secret-change-in-production}
+      VALIDATOR_STANDALONE: "true"
+      VALIDATOR_PUBLIC_URL: ${VALIDATOR_PUBLIC_URL:-https://play-casino.me}
+      LINK_FILTER_WORKER: "true"
+      LINK_FILTER_CONCURRENCY: ${LINK_FILTER_CONCURRENCY:-10}
+      LINK_FILTER_GAP_MS: ${LINK_FILTER_GAP_MS:-110}
+      LINK_FILTER_TIMEOUT_MS: ${LINK_FILTER_TIMEOUT_MS:-8000}
+      LINK_FILTER_RETRIES: ${LINK_FILTER_RETRIES:-2}
+      LINK_FILTER_MAX_PASSES: ${LINK_FILTER_MAX_PASSES:-6}
+      LINK_FILTER_PASS_COOLDOWN_MS: ${LINK_FILTER_PASS_COOLDOWN_MS:-20000}
+      LINK_FILTER_PROXY_COUNT: ${LINK_FILTER_PROXY_COUNT:-3}
+      LINK_FILTER_BREAKER_CONSEC: ${LINK_FILTER_BREAKER_CONSEC:-120}
+      LINK_FILTER_BREAKER_PAUSE_MS: ${LINK_FILTER_BREAKER_PAUSE_MS:-20000}
+      RUN_MIGRATIONS: "false"
+      RUN_SEED: "false"
     volumes:
       - ./web/uploads:/app/uploads
     depends_on:
@@ -49,6 +84,13 @@ services:
     environment:
       DATABASE_URL: postgresql://aria:aria_dev_2026@postgres:5432/aria_db
       AUTH_SECRET: ${AUTH_SECRET:-dev-secret-change-in-production}
+      AI_JOB_CONCURRENCY: ${AI_JOB_CONCURRENCY:-3}
+      AI_RECONCILE_SECONDS: ${AI_RECONCILE_SECONDS:-5}
+      AI_CATCHUP_HOURS: ${AI_CATCHUP_HOURS:-24}
+      AI_CATCHUP_MAX_CHATS: ${AI_CATCHUP_MAX_CHATS:-60}
+      AI_CATCHUP_DIALOG_LIMIT: ${AI_CATCHUP_DIALOG_LIMIT:-200}
+      CAPITALBOT_ENDPOINT_URL: ${CAPITALBOT_ENDPOINT_URL:-https://api.capitalbot.ai/generateResponse}
+      CUPIDBOT_ENDPOINT_URL: ${CUPIDBOT_ENDPOINT_URL:-https://chat-api.cupidbotofm.ai/api/generateChatResponse}
     depends_on:
       postgres:
         condition: service_healthy

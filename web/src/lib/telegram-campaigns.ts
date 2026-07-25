@@ -3,6 +3,10 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
+  debitValidatorCredits,
+  quoteValidatorTask,
+} from "@/lib/validator-credits";
+import {
   TelegramControlError,
   telegramSessionSafety,
 } from "@/lib/telegram-control";
@@ -334,6 +338,10 @@ export async function createTelegramCampaign(
       413,
       "TELEGRAM_CAMPAIGN_TOO_LARGE",
     );
+  const creditQuote = await quoteValidatorTask("campaign_send", {
+    items: transmissions.length,
+    sessions: sessionIds.length,
+  });
   const capacities = new Map(
     sessions.map((session) => [
       session.id,
@@ -373,39 +381,6 @@ export async function createTelegramCampaign(
 
   return prisma.$transaction(
     async (transaction) => {
-      const now = new Date();
-      const reserved = await transaction.validatorAccessKey.updateMany({
-        where: {
-          id: account.accessKeyId!,
-          accountId: account.id,
-          revoked: false,
-          messagingAccess: true,
-          AND: [
-            { OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
-            {
-              OR: [
-                { messageLimit: null },
-                {
-                  messagesUsed: {
-                    lte: await remainingCeiling(
-                      transaction,
-                      account.accessKeyId!,
-                      transmissions.length,
-                    ),
-                  },
-                },
-              ],
-            },
-          ],
-        },
-        data: { messagesUsed: { increment: transmissions.length } },
-      });
-      if (!reserved.count)
-        throw new TelegramControlError(
-          "Messaging quota exceeded or access is no longer active",
-          403,
-          "TELEGRAM_MESSAGE_QUOTA_EXCEEDED",
-        );
       const campaign = await transaction.telegramCampaign.create({
         data: {
           accountId: account.id,
@@ -419,6 +394,8 @@ export async function createTelegramCampaign(
           totalCount: transmissions.length,
           sessionCount: sessionIds.length,
           reservedMessages: transmissions.length,
+          reservedCredits: creditQuote.credits,
+          creditItemCost: creditQuote.price.itemCost,
           trackReplies: data.targetType === "users" && data.trackReplies,
           replyWindowHours: data.replyWindowHours,
           configuration: {
@@ -430,6 +407,7 @@ export async function createTelegramCampaign(
             cooldownSecondsMin: data.cooldownSecondsMin,
             cooldownSecondsMax: data.cooldownSecondsMax,
             perSessionQuota: data.perSessionQuota,
+            creditPricing: creditQuote.price,
           },
           sessions: {
             create: sessionIds.map((sessionId, position) => ({
@@ -439,6 +417,24 @@ export async function createTelegramCampaign(
             })),
           },
         },
+      });
+      await debitValidatorCredits(transaction, {
+        accountId: account.id,
+        accessKeyId: account.accessKeyId,
+        credits: creditQuote.credits,
+        taskCode: "campaign_send",
+        description: `${transmissions.length.toLocaleString()} Telegram message attempts`,
+        referenceType: "telegram_campaign",
+        referenceId: campaign.id,
+        metadata: {
+          attempts: transmissions.length,
+          sessions: sessionIds.length,
+          mode: data.mode,
+        },
+      });
+      await transaction.validatorAccessKey.updateMany({
+        where: { id: account.accessKeyId!, accountId: account.id },
+        data: { messagesUsed: { increment: transmissions.length } },
       });
       for (let offset = 0; offset < transmissions.length; offset += 1000) {
         await transaction.telegramCampaignRecipient.createMany({
@@ -462,18 +458,6 @@ export async function createTelegramCampaign(
       isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
     },
   );
-}
-
-async function remainingCeiling(
-  transaction: Prisma.TransactionClient,
-  keyId: string,
-  reserve: number,
-) {
-  const key = await transaction.validatorAccessKey.findUnique({
-    where: { id: keyId },
-    select: { messageLimit: true },
-  });
-  return key?.messageLimit == null ? 2_147_483_647 : key.messageLimit - reserve;
 }
 
 export async function listTelegramCampaigns(accountId: string, limit = 50) {

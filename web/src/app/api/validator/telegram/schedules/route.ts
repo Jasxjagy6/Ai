@@ -5,6 +5,7 @@ import { requireMessagingAccount } from "@/lib/validator-auth";
 import { messagingUnauthorized } from "@/lib/validator-api";
 import { telegramCampaignCandidate } from "@/lib/telegram-campaigns";
 import { telegramSessionSafety } from "@/lib/telegram-control";
+import { runChargedValidatorTask } from "@/lib/validator-credits";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(160),
@@ -169,22 +170,33 @@ export async function POST(request: Request) {
       { error: "Every-account DM schedules are limited to 50 targets" },
       { status: 400 },
     );
-  const schedule = await prisma.telegramMessageSchedule.create({
-    data: {
+  const schedule = await runChargedValidatorTask(
+    {
       accountId: account.id,
       accessKeyId: account.accessKeyId,
-      sourceListId: data.sourceListId || null,
-      name: data.name,
-      targetType: data.targetType,
-      mode: data.mode,
-      message: data.message,
-      parseMode: data.parseMode,
-      sessionIds,
-      manualTargets: data.manualTargets,
-      configuration: data.configuration,
-      intervalMinutes: data.intervalMinutes,
-      nextRunAt: data.nextRunAt,
+      taskCode: "schedule_create",
+      items: targetKeys.size,
+      sessions: sessionIds.length,
+      description: `Create ${data.name} recurring schedule`,
     },
-  });
+    () =>
+      prisma.telegramMessageSchedule.create({
+        data: {
+          accountId: account.id,
+          accessKeyId: account.accessKeyId,
+          sourceListId: data.sourceListId || null,
+          name: data.name,
+          targetType: data.targetType,
+          mode: data.mode,
+          message: data.message,
+          parseMode: data.parseMode,
+          sessionIds,
+          manualTargets: data.manualTargets,
+          configuration: data.configuration,
+          intervalMinutes: data.intervalMinutes,
+          nextRunAt: data.nextRunAt,
+        },
+      }),
+  );
   return NextResponse.json({ schedule }, { status: 201 });
 }
