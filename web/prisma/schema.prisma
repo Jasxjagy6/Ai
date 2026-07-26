@@ -244,30 +244,30 @@ model Changelog {
 
 // Imported Telegram contact lists and durable, sessionless t.me checks.
 model ValidatorAccount {
-  id                       String                       @id @default(cuid())
-  email                    String                       @unique
-  active                   Boolean                      @default(true)
-  creditsBalance           Int                          @default(0)
-  creditsPurchased         Int                          @default(0)
-  creditsSpent             Int                          @default(0)
-  currentPlanCode          String?                      @db.VarChar(40)
+  id                       String                         @id @default(cuid())
+  email                    String                         @unique
+  active                   Boolean                        @default(true)
+  creditsBalance           Int                            @default(0)
+  creditsPurchased         Int                            @default(0)
+  creditsSpent             Int                            @default(0)
+  currentPlanCode          String?                        @db.VarChar(40)
   planExpiresAt            DateTime?
   lastCreditTopupAt        DateTime?
-  referralCode             String?                      @unique @db.VarChar(20)
+  referralCode             String?                        @unique @db.VarChar(20)
   referredById             String?
-  referredBy               ValidatorAccount?            @relation("ValidatorReferrals", fields: [referredById], references: [id], onDelete: SetNull)
-  referrals                ValidatorAccount[]           @relation("ValidatorReferrals")
+  referredBy               ValidatorAccount?              @relation("ValidatorReferrals", fields: [referredById], references: [id], onDelete: SetNull)
+  referrals                ValidatorAccount[]             @relation("ValidatorReferrals")
   affiliateRateBps         Int?
-  createdAt                DateTime                     @default(now())
-  updatedAt                DateTime                     @updatedAt
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
   keys                     ValidatorAccessKey[]
   sessions                 ValidatorSession[]
   lists                    ContactList[]
   jobs                     LinkFilterJob[]
   purchases                ValidatorPurchase[]
   creditTransactions       ValidatorCreditTransaction[]
-  affiliateRewardsEarned   ValidatorAffiliateReward[]   @relation("AffiliateReferrer")
-  affiliateRewardsReceived ValidatorAffiliateReward[]   @relation("AffiliateCustomer")
+  affiliateRewardsEarned   ValidatorAffiliateReward[]     @relation("AffiliateReferrer")
+  affiliateRewardsReceived ValidatorAffiliateReward[]     @relation("AffiliateCustomer")
   telegramCredential       TelegramApiCredential?
   telegramSessions         TelegramSession[]
   telegramSessionLists     TelegramSessionList[]
@@ -282,6 +282,9 @@ model ValidatorAccount {
   aiChatMemories           AiChatMemory[]
   aiChatJobs               AiChatJob[]
   aiResponseLogs           AiResponseLog[]
+  aiCampaigns              AiCampaign[]
+  accountSettingsBatches   TelegramAccountSettingsBatch[]
+  accountSettingsJobs      TelegramAccountSettingsJob[]
 
   @@index([referredById])
 }
@@ -497,6 +500,8 @@ model LinkFilterJob {
 
   @@index([accountId, createdAt])
   @@index([status, createdAt])
+  @@index([sourceListId])
+  @@index([resultListId])
 }
 
 model LinkFilterItem {
@@ -518,6 +523,7 @@ model LinkFilterItem {
 
   @@unique([jobId, normalizedUsername])
   @@index([jobId, status, createdAt])
+  @@index([sourceListItemId])
 }
 
 model TelegramApiCredential {
@@ -534,59 +540,68 @@ model TelegramApiCredential {
 }
 
 model TelegramSession {
-  id                      String                      @id @default(cuid())
+  id                      String                       @id @default(cuid())
   accountId               String
-  account                 ValidatorAccount            @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  account                 ValidatorAccount             @relation(fields: [accountId], references: [id], onDelete: Cascade)
   credentialId            String
-  credential              TelegramApiCredential       @relation(fields: [credentialId], references: [id], onDelete: Restrict)
-  label                   String                      @db.VarChar(100)
-  phone                   String?                     @db.VarChar(30)
-  username                String?                     @db.VarChar(100)
-  firstName               String?                     @db.VarChar(100)
-  lastName                String?                     @db.VarChar(100)
+  credential              TelegramApiCredential        @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+  label                   String                       @db.VarChar(100)
+  phone                   String?                      @db.VarChar(30)
+  username                String?                      @db.VarChar(100)
+  firstName               String?                      @db.VarChar(100)
+  lastName                String?                      @db.VarChar(100)
+  profileBio              String?                      @db.VarChar(255)
+  avatarData              Bytes?
+  avatarMime              String?                      @db.VarChar(50)
+  isPremium               Boolean                      @default(false)
+  isVerified              Boolean                      @default(false)
+  isRestricted            Boolean                      @default(false)
+  profileSyncedAt         DateTime?
+  profileSyncRequested    Boolean                      @default(true)
+  profileSyncClaimedAt    DateTime?
   telegramUserId          BigInt?
   sessionDataEncrypted    String
-  sessionFingerprint      String                      @db.VarChar(64)
-  sessionFormat           String                      @default("session_string") @db.VarChar(30)
-  sourceFilename          String?                     @db.VarChar(255)
-  status                  String                      @default("uploaded") @db.VarChar(30)
-  isLoggedIn              Boolean                     @default(false)
-  hasTwoFactor            Boolean                     @default(false)
-  antiDetectEnabled       Boolean                     @default(true)
+  sessionFingerprint      String                       @db.VarChar(64)
+  sessionFormat           String                       @default("session_string") @db.VarChar(30)
+  sourceFilename          String?                      @db.VarChar(255)
+  status                  String                       @default("uploaded") @db.VarChar(30)
+  isLoggedIn              Boolean                      @default(false)
+  hasTwoFactor            Boolean                      @default(false)
+  antiDetectEnabled       Boolean                      @default(true)
   deviceIdentity          Json?
   proxyEncrypted          String?
-  proxyLabel              String?                     @db.VarChar(100)
-  proxyEnabled            Boolean                     @default(false)
-  riskScore               Float                       @default(0)
-  spamStatus              String                      @default("unknown") @db.VarChar(30)
+  proxyLabel              String?                      @db.VarChar(100)
+  proxyEnabled            Boolean                      @default(false)
+  riskScore               Float                        @default(0)
+  spamStatus              String                       @default("unknown") @db.VarChar(30)
   spamLimitUntil          DateTime?
   spamCheckedAt           DateTime?
   spamStatusMessage       String?
-  spamCheckRequested      Boolean                     @default(true)
+  spamCheckRequested      Boolean                      @default(true)
   spamCheckClaimedAt      DateTime?
   healthCooldownUntil     DateTime?
-  consecutiveFloodWaits   Int                         @default(0)
-  lastFloodSeconds        Int                         @default(0)
+  consecutiveFloodWaits   Int                          @default(0)
+  lastFloodSeconds        Int                          @default(0)
   lastFloodAt             DateTime?
-  consecutiveSendFailures Int                         @default(0)
-  warmupEnabled           Boolean                     @default(true)
-  warmupMode              String                      @default("safe") @db.VarChar(20)
-  warmupStartedAt         DateTime                    @default(now())
+  consecutiveSendFailures Int                          @default(0)
+  warmupEnabled           Boolean                      @default(true)
+  warmupMode              String                       @default("safe") @db.VarChar(20)
+  warmupStartedAt         DateTime                     @default(now())
   warmupCompletedAt       DateTime?
   lastWarmupAt            DateTime?
-  warmupActions           Int                         @default(0)
-  warmupRequested         Boolean                     @default(false)
+  warmupActions           Int                          @default(0)
+  warmupRequested         Boolean                      @default(false)
   warmupClaimedAt         DateTime?
-  dailyMessagesSent       Int                         @default(0)
-  dailyMessagesResetAt    DateTime                    @default(now())
-  lastErrorCode           String?                     @db.VarChar(100)
+  dailyMessagesSent       Int                          @default(0)
+  dailyMessagesResetAt    DateTime                     @default(now())
+  lastErrorCode           String?                      @db.VarChar(100)
   lastErrorMessage        String?
   lastLoginAt             DateTime?
   lastActiveAt            DateTime?
-  messagesSent            Int                         @default(0)
-  repliesReceived         Int                         @default(0)
-  createdAt               DateTime                    @default(now())
-  updatedAt               DateTime                    @updatedAt
+  messagesSent            Int                          @default(0)
+  repliesReceived         Int                          @default(0)
+  createdAt               DateTime                     @default(now())
+  updatedAt               DateTime                     @updatedAt
   listMemberships         TelegramSessionListMember[]
   campaignAssignments     TelegramCampaignSession[]
   recipients              TelegramCampaignRecipient[]
@@ -596,6 +611,8 @@ model TelegramSession {
   aiMemories              AiChatMemory[]
   aiJobs                  AiChatJob[]
   aiResponseLogs          AiResponseLog[]
+  aiCampaignMemberships   AiCampaignSession[]
+  accountSettingsJobs     TelegramAccountSettingsJob[]
 
   @@unique([accountId, sessionFingerprint])
   @@index([accountId, createdAt])
@@ -606,6 +623,7 @@ model TelegramSession {
   @@index([warmupEnabled, lastWarmupAt])
   @@index([spamCheckRequested, spamCheckClaimedAt])
   @@index([warmupRequested, warmupClaimedAt])
+  @@index([profileSyncRequested, profileSyncClaimedAt])
 }
 
 model TelegramSessionList {
@@ -632,6 +650,57 @@ model TelegramSessionListMember {
 
   @@id([listId, sessionId])
   @@index([sessionId])
+}
+
+model TelegramAccountSettingsBatch {
+  id              String                       @id @default(cuid())
+  accountId       String
+  account         ValidatorAccount             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  kind            String                       @db.VarChar(40)
+  status          String                       @default("pending") @db.VarChar(20)
+  totalCount      Int                          @default(0)
+  processedCount  Int                          @default(0)
+  succeededCount  Int                          @default(0)
+  failedCount     Int                          @default(0)
+  skippedCount    Int                          @default(0)
+  cancelRequested Boolean                      @default(false)
+  metadata        Json?
+  errorMessage    String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  createdAt       DateTime                     @default(now())
+  updatedAt       DateTime                     @updatedAt
+  jobs            TelegramAccountSettingsJob[]
+
+  @@index([accountId, createdAt])
+  @@index([status, createdAt])
+}
+
+model TelegramAccountSettingsJob {
+  id           String                       @id @default(cuid())
+  batchId      String
+  batch        TelegramAccountSettingsBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  accountId    String
+  account      ValidatorAccount             @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sessionId    String
+  session      TelegramSession              @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  action       String                       @db.VarChar(40)
+  status       String                       @default("pending") @db.VarChar(20)
+  position     Int                          @default(0)
+  payload      Json?
+  result       Json?
+  errorCode    String?                      @db.VarChar(100)
+  errorMessage String?
+  attempts     Int                          @default(0)
+  claimedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime                     @default(now())
+  updatedAt    DateTime                     @updatedAt
+
+  @@index([status, createdAt])
+  @@index([batchId, status, position])
+  @@index([accountId, createdAt])
+  @@index([sessionId, createdAt])
 }
 
 model TelegramLoginFlow {
@@ -712,6 +781,7 @@ model TelegramCampaign {
   @@index([status, createdAt])
   @@index([replyTrackingStatus, replyTrackingUntil])
   @@index([scheduleId])
+  @@index([sourceListId])
 }
 
 model TelegramCampaignSession {
@@ -817,6 +887,7 @@ model TelegramMessageSchedule {
   @@index([accountId, createdAt])
   @@index([accessKeyId])
   @@index([status, nextRunAt])
+  @@index([sourceListId])
 }
 
 // Signal Desk AI Chatter. Provider secrets are encrypted with the same
@@ -873,24 +944,90 @@ model AiSessionSetting {
   @@index([catchupRequested, catchupClaimedAt])
 }
 
-model AiChatSetting {
-  id        String           @id @default(cuid())
-  accountId String
-  account   ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  sessionId String
-  session   TelegramSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  peerId    BigInt
-  enabled   Boolean          @default(true)
-  config    Json?
-  createdAt DateTime         @default(now())
-  updatedAt DateTime         @updatedAt
+model AiCampaign {
+  id                   String              @id @default(cuid())
+  accountId            String
+  account              ValidatorAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name                 String              @db.VarChar(160)
+  provider             String              @db.VarChar(30)
+  secretEncrypted      String
+  credentialValid      Boolean             @default(true)
+  modelId              Int?
+  presetId             Int?
+  catalog              Json?
+  config               Json
+  reengageEnabled      Boolean             @default(true)
+  durationMode         String              @default("until_stopped") @db.VarChar(30)
+  status               String              @default("starting") @db.VarChar(30)
+  messagesReceived     Int                 @default(0)
+  messagesSent         Int                 @default(0)
+  failedCount          Int                 @default(0)
+  creditsUsed          Int                 @default(0)
+  startedAt            DateTime            @default(now())
+  endsAt               DateTime?
+  stoppedAt            DateTime?
+  creditGraceStartedAt DateTime?
+  creditGraceEndsAt    DateTime?
+  lastError            String?
+  createdAt            DateTime            @default(now())
+  updatedAt            DateTime            @updatedAt
+  sessions             AiCampaignSession[]
+  chatSettings         AiChatSetting[]
+  memories             AiChatMemory[]
+  jobs                 AiChatJob[]
+  responseLogs         AiResponseLog[]
 
-  @@unique([sessionId, peerId])
+  @@index([accountId, createdAt])
+  @@index([status, endsAt])
+  @@index([accountId, status])
+  @@index([creditGraceEndsAt])
+}
+
+model AiCampaignSession {
+  id               String           @id @default(cuid())
+  campaignId       String
+  campaign         AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  sessionId        String
+  session          TelegramSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  activeSessionId  String?          @unique
+  position         Int              @default(0)
+  runtimeStatus    String           @default("starting") @db.VarChar(30)
+  lastConnectedAt  DateTime?
+  lastHeartbeatAt  DateTime?
+  lastError        String?
+  catchupRequested Boolean          @default(true)
+  catchupClaimedAt DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([campaignId, sessionId])
+  @@index([campaignId, position])
+  @@index([sessionId, createdAt])
+  @@index([runtimeStatus, lastHeartbeatAt])
+}
+
+model AiChatSetting {
+  id         String           @id @default(cuid())
+  campaignId String
+  campaign   AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sessionId  String
+  session    TelegramSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  peerId     BigInt
+  enabled    Boolean          @default(true)
+  config     Json?
+  createdAt  DateTime         @default(now())
+  updatedAt  DateTime         @updatedAt
+
+  @@unique([campaignId, sessionId, peerId])
   @@index([accountId, updatedAt])
 }
 
 model AiChatMemory {
   id                String           @id @default(cuid())
+  campaignId        String
+  campaign          AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   accountId         String
   account           ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   sessionId         String
@@ -906,13 +1043,16 @@ model AiChatMemory {
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
-  @@unique([sessionId, peerId])
+  @@unique([campaignId, sessionId, peerId])
+  @@index([campaignId, updatedAt])
   @@index([accountId, updatedAt])
   @@index([sessionId, updatedAt])
 }
 
 model AiChatJob {
   id             String           @id @default(cuid())
+  campaignId     String
+  campaign       AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   accountId      String
   account        ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   sessionId      String
@@ -933,7 +1073,8 @@ model AiChatJob {
   createdAt      DateTime         @default(now())
   updatedAt      DateTime         @updatedAt
 
-  @@unique([sessionId, incomingMsgId])
+  @@unique([campaignId, sessionId, incomingMsgId])
+  @@index([campaignId, status, runAfter])
   @@index([status, runAfter, createdAt])
   @@index([accountId, createdAt])
   @@index([sessionId, peerId, createdAt])
@@ -941,6 +1082,8 @@ model AiChatJob {
 
 model AiResponseLog {
   id            String           @id @default(cuid())
+  campaignId    String
+  campaign      AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   accountId     String
   account       ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
   sessionId     String
@@ -962,6 +1105,7 @@ model AiResponseLog {
   createdAt     DateTime         @default(now())
 
   @@index([accountId, createdAt])
+  @@index([campaignId, createdAt])
   @@index([sessionId, peerId, createdAt])
   @@index([status, createdAt])
 }

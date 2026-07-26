@@ -104,6 +104,13 @@ export function sessionView(session: {
   username: string | null;
   firstName: string | null;
   lastName: string | null;
+  profileBio: string | null;
+  avatarMime: string | null;
+  isPremium: boolean;
+  isVerified: boolean;
+  isRestricted: boolean;
+  profileSyncedAt: Date | null;
+  profileSyncRequested: boolean;
   telegramUserId: bigint | null;
   sessionFormat: string;
   sourceFilename: string | null;
@@ -111,6 +118,7 @@ export function sessionView(session: {
   isLoggedIn: boolean;
   hasTwoFactor: boolean;
   antiDetectEnabled: boolean;
+  deviceIdentity: Prisma.JsonValue | null;
   proxyLabel: string | null;
   proxyEnabled: boolean;
   riskScore: number;
@@ -149,6 +157,16 @@ export function sessionView(session: {
     username: session.username,
     firstName: session.firstName,
     lastName: session.lastName,
+    profileBio: session.profileBio,
+    avatarUrl: session.avatarMime
+      ? `/api/validator/telegram/sessions/${session.id}/avatar?v=${session.profileSyncedAt?.getTime() || session.updatedAt.getTime()}`
+      : null,
+    avatarMime: session.avatarMime,
+    isPremium: session.isPremium,
+    isVerified: session.isVerified,
+    isRestricted: session.isRestricted,
+    profileSyncedAt: session.profileSyncedAt,
+    profileSyncRequested: session.profileSyncRequested,
     telegramUserId: session.telegramUserId?.toString() || null,
     sessionFormat: session.sessionFormat,
     sourceFilename: session.sourceFilename,
@@ -156,6 +174,7 @@ export function sessionView(session: {
     isLoggedIn: session.isLoggedIn,
     hasTwoFactor: session.hasTwoFactor,
     antiDetectEnabled: session.antiDetectEnabled,
+    deviceIdentity: session.deviceIdentity,
     proxyLabel: session.proxyLabel,
     proxyEnabled: session.proxyEnabled,
     riskScore: session.riskScore,

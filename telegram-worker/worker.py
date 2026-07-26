@@ -291,17 +291,17 @@ def client_for(record, session_string: str | None = None, updates: bool = False)
 
 
 async def disconnect(client: Client | None) -> None:
-    for session_id, entry in list(AI_CLIENTS.items()):
+    for client_key, entry in list(AI_CLIENTS.items()):
         if entry["client"] is not client:
             continue
         entry["leases"] = max(0, int(entry.get("leases", 0)) - 1)
         if entry.get("stopRequested") and entry["leases"] == 0:
-            AI_CLIENTS.pop(session_id, None)
+            AI_CLIENTS.pop(client_key, None)
             with suppress(Exception):
                 await client.stop()
             with suppress(Exception):
-                await entry["pool"].execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'stopped',
-                  "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', session_id)
+                await entry["pool"].execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'stopped',
+                  "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', entry["record"]["membershipId"])
         return
     transient_session = AI_TRANSIENT_CLIENTS.pop(id(client), None) if client else None
     if transient_session:
@@ -311,12 +311,38 @@ async def disconnect(client: Client | None) -> None:
             await client.disconnect()
 
 
+async def profile_details(client: Client, me) -> dict:
+    bio = None
+    avatar = None
+    with suppress(Exception):
+        chat = await client.get_chat(me.id)
+        bio = getattr(chat, "bio", None)
+    photo = getattr(me, "photo", None)
+    file_id = getattr(photo, "big_file_id", None) or getattr(photo, "small_file_id", None)
+    if file_id:
+        with suppress(Exception):
+            downloaded = await asyncio.wait_for(
+                client.download_media(file_id, in_memory=True), timeout=15
+            )
+            avatar = downloaded.getvalue() if hasattr(downloaded, "getvalue") else None
+            if avatar and len(avatar) > 2 * 1024 * 1024:
+                avatar = None
+    return {
+        "bio": str(bio)[:255] if bio else None,
+        "avatar": avatar,
+        "avatarMime": "image/jpeg" if avatar else None,
+        "isPremium": bool(getattr(me, "is_premium", False)),
+        "isVerified": bool(getattr(me, "is_verified", False)),
+        "isRestricted": bool(getattr(me, "is_restricted", False)),
+    }
+
+
 async def profile(client: Client):
     me = await client.get_me()
     await client.storage.user_id(me.id)
     await client.storage.is_bot(bool(me.is_bot))
     session_string = await client.export_session_string()
-    return me, session_string
+    return me, session_string, await profile_details(client, me)
 
 
 async def pending_session(client: Client) -> str:
@@ -354,21 +380,63 @@ async def validate_session(pool, record):
         authorized = await asyncio.wait_for(client.connect(), timeout=45)
         if not authorized:
             raise ValueError("Telegram session is not authorized")
-        me, session_string = await asyncio.wait_for(profile(client), timeout=30)
+        me, session_string, details = await asyncio.wait_for(profile(client), timeout=30)
         await pool.execute('''
             UPDATE "TelegramSession" SET status = 'active', "isLoggedIn" = TRUE,
               phone = $2, username = $3, "firstName" = $4, "lastName" = $5, "telegramUserId" = $6,
               "sessionDataEncrypted" = $7, "sessionFingerprint" = $8, "sessionFormat" = 'hydrogram_string',
+              "profileBio" = $9, "avatarData" = $10, "avatarMime" = $11,
+              "isPremium" = $12, "isVerified" = $13, "isRestricted" = $14,
+              "profileSyncedAt" = NOW(), "profileSyncRequested" = FALSE, "profileSyncClaimedAt" = NULL,
               "lastErrorCode" = NULL, "lastErrorMessage" = NULL, "lastLoginAt" = NOW(),
               "lastActiveAt" = NOW(), "updatedAt" = NOW() WHERE id = $1
         ''', record["id"], me.phone_number, me.username, me.first_name, me.last_name, me.id,
-            encrypt(session_string), fingerprint(session_string))
+            encrypt(session_string), fingerprint(session_string), details["bio"], details["avatar"],
+            details["avatarMime"], details["isPremium"], details["isVerified"], details["isRestricted"])
         log.info("Validated Telegram session %s", record["id"])
     except Exception as error:
         log.warning("Session %s validation failed: %s", record["id"], error)
         await pool.execute('''UPDATE "TelegramSession" SET status = 'error', "isLoggedIn" = FALSE,
             "lastErrorCode" = $2, "lastErrorMessage" = $3, "updatedAt" = NOW() WHERE id = $1''',
             record["id"], error_code(error), str(error)[:2000])
+    finally:
+        await disconnect(client)
+
+
+async def claim_profile_sync(pool):
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow('''SELECT s.*, c."apiId", c."apiHashEncrypted"
+          FROM "TelegramSession" s JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
+          WHERE s.status = 'active' AND s."isLoggedIn" = TRUE AND s."profileSyncRequested" = TRUE
+            AND (s."profileSyncClaimedAt" IS NULL OR s."profileSyncClaimedAt" < NOW() - INTERVAL '10 minutes')
+          ORDER BY s."profileSyncedAt" ASC NULLS FIRST, s."createdAt" ASC
+          FOR UPDATE OF s SKIP LOCKED LIMIT 1''')
+        if row:
+            await connection.execute('''UPDATE "TelegramSession" SET "profileSyncClaimedAt" = NOW(),
+              "updatedAt" = NOW() WHERE id = $1''', row["id"])
+        return dict(row) if row else None
+
+
+async def sync_profile(pool, record):
+    client = None
+    try:
+        client = await open_campaign_client(record)
+        me = await asyncio.wait_for(client.get_me(), timeout=30)
+        details = await profile_details(client, me)
+        await pool.execute('''UPDATE "TelegramSession" SET phone = $2, username = $3,
+          "firstName" = $4, "lastName" = $5, "telegramUserId" = $6, "profileBio" = $7,
+          "avatarData" = $8, "avatarMime" = $9, "isPremium" = $10, "isVerified" = $11,
+          "isRestricted" = $12, "profileSyncedAt" = NOW(), "profileSyncRequested" = FALSE,
+          "profileSyncClaimedAt" = NULL, "lastActiveAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+          record["id"], me.phone_number, me.username, me.first_name, me.last_name, me.id,
+          details["bio"], details["avatar"], details["avatarMime"], details["isPremium"],
+          details["isVerified"], details["isRestricted"])
+        log.info("Synced Telegram profile %s", record["id"])
+    except Exception as error:
+        await pool.execute('''UPDATE "TelegramSession" SET "profileSyncRequested" = FALSE,
+          "profileSyncClaimedAt" = NULL, "lastErrorCode" = $2, "lastErrorMessage" = $3,
+          "updatedAt" = NOW() WHERE id = $1''', record["id"], error_code(error), str(error)[:2000])
+        log.warning("Profile sync %s failed: %s", record["id"], error)
     finally:
         await disconnect(client)
 
@@ -395,6 +463,7 @@ async def claim_flow(pool):
 
 async def finish_login(pool, record, client, me):
     session_string = await client.export_session_string()
+    details = await profile_details(client, me)
     encrypted = encrypt(session_string)
     session_id = f"tgs_{uuid.uuid4().hex}"
     async with pool.acquire() as connection, connection.transaction():
@@ -405,13 +474,16 @@ async def finish_login(pool, record, client, me):
         await connection.execute('''
             INSERT INTO "TelegramSession" (id, "accountId", "credentialId", label, phone, username,
               "firstName", "lastName", "telegramUserId", "sessionDataEncrypted", "sessionFingerprint",
+              "profileBio", "avatarData", "avatarMime", "isPremium", "isVerified", "isRestricted",
               "sessionFormat", status, "isLoggedIn", "hasTwoFactor", "deviceIdentity", "proxyEncrypted",
-              "proxyEnabled", "lastLoginAt", "lastActiveAt", "createdAt", "updatedAt")
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'hydrogram_string','active',TRUE,$12,$13,$14,$15,NOW(),NOW(),NOW(),NOW())
+              "proxyEnabled", "profileSyncedAt", "profileSyncRequested", "lastLoginAt", "lastActiveAt", "createdAt", "updatedAt")
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+              'hydrogram_string','active',TRUE,$18,$19,$20,$21,NOW(),FALSE,NOW(),NOW(),NOW(),NOW())
         ''', session_id, record["accountId"], record["credentialId"], record["label"], me.phone_number,
             me.username, me.first_name, me.last_name, me.id, encrypted, fingerprint(session_string),
-            record["claimed_status"] == "checking_password", record["deviceIdentity"], record["proxyEncrypted"],
-            bool(record["proxyEncrypted"]))
+            details["bio"], details["avatar"], details["avatarMime"], details["isPremium"],
+            details["isVerified"], details["isRestricted"], record["claimed_status"] == "checking_password",
+            record["deviceIdentity"], record["proxyEncrypted"], bool(record["proxyEncrypted"]))
         await connection.execute('''UPDATE "TelegramLoginFlow" SET status = 'completed', "sessionId" = $2,
           "codeEncrypted" = NULL, "passwordEncrypted" = NULL, "phoneCodeHashEncrypted" = NULL,
           "sessionDataEncrypted" = NULL, "errorCode" = NULL, "errorMessage" = NULL, "updatedAt" = NOW()
@@ -499,10 +571,17 @@ async def campaign_sessions(pool, campaign_id):
 
 
 async def open_campaign_client(record):
-    shared = AI_CLIENTS.get(record["id"])
-    if shared and shared["client"].is_connected:
-        shared["leases"] = int(shared.get("leases", 0)) + 1
-        return shared["client"]
+    for _ in range(100):
+        shared = next((entry for entry in AI_CLIENTS.values()
+                       if entry["record"]["id"] == record["id"] and entry["client"].is_connected), None)
+        if shared:
+            shared["leases"] = int(shared.get("leases", 0)) + 1
+            return shared["client"]
+        if record["id"] not in AI_BUSY_SESSIONS:
+            break
+        await asyncio.sleep(0.5)
+    if record["id"] in AI_BUSY_SESSIONS:
+        raise TimeoutError("Telegram session is busy")
     AI_BUSY_SESSIONS.add(record["id"])
     try:
         session_string = canonical_session(decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"])
@@ -1342,7 +1421,13 @@ def ai_config(account_config, session_config):
     account = json_value(account_config)
     session = json_value(session_config)
     merged = {**account, **session}
-    merged["capitalbot"] = {**json_value(account.get("capitalbot")), **json_value(session.get("capitalbot"))}
+    account_capitalbot = json_value(account.get("capitalbot"))
+    merged["capitalbot"] = {
+        **account_capitalbot,
+        **json_value(session.get("capitalbot")),
+        "detectLanguage": False,
+        "language": str(account_capitalbot.get("language") or "English"),
+    }
     merged["cupidbot"] = {**json_value(account.get("cupidbot")), **json_value(session.get("cupidbot"))}
     merged["provider"] = str(merged.get("provider") or "capitalbot").lower()
     merged["replyDelayMs"] = max(0, min(60000, int(merged.get("replyDelayMs", 3000))))
@@ -1353,7 +1438,7 @@ def ai_config(account_config, session_config):
 
 def _request_json_sync(url, body):
     payload = json.dumps(body).encode()
-    request = Request(url, payload, {"Content-Type": "application/json"}, method="POST")
+    request = Request(url, payload, {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}, method="POST")
     try:
         with urlopen(request, timeout=60) as response:
             raw = response.read().decode()
@@ -1409,14 +1494,18 @@ async def generate_ai_reply(provider, credential, config, session, recipient, me
             "content": str(item.get("msg") or ""),
             "timestamp": int(int(item.get("timestamp") or int(datetime.now().timestamp() * 1000)) / 1000),
         } for item in messages[-55:]]
+        uid_input = f"{credential['id']}_{session['id']}_{peer_id}"
+        user_id = hashlib.sha256(uid_input.encode()).hexdigest()[:24]
         body = {
             "licensekey": secret,
             "modelId": credential.get("modelId") or options.get("modelId") or 43,
             "presetId": credential.get("presetId") or options.get("presetId") or 88,
-            "accountId": session["id"],
+            "accountId": f"{credential['id']}:{session['id']}",
             "platform": "Telegram",
             "conversationSource": "Telegram",
-            "userInfos": {"useridentifier": f"acct{session['id']}_{peer_id}"},
+            "detectLanguage": False,
+            "language": str(options.get("language") or "English"),
+            "userInfos": {"useridentifier": f"v2_{user_id}"},
             "chatHistory": history,
         }
         for target, source in (("name", "name"), ("username", "username"), ("location", "location")):
@@ -1426,8 +1515,8 @@ async def generate_ai_reply(provider, credential, config, session, recipient, me
             body["modelName"] = " ".join(filter(None, [session.get("firstName"), session.get("lastName")]))
         for field in (
             "city", "modelName", "modelAge", "chattingStyle", "appearance", "hobbies", "ctaInfo",
-            "dayTimeActivity", "nightTimeActivity", "language", "photoRate", "interestLevel", "phaseGoal",
-            "matchLocation", "timezone", "outfit", "livePhotoSource", "detectLanguage", "audio", "video",
+            "dayTimeActivity", "nightTimeActivity", "photoRate", "interestLevel", "phaseGoal",
+            "matchLocation", "timezone", "outfit", "livePhotoSource", "audio", "video",
             "image", "affiliate",
         ):
             if options.get(field) is not None:
@@ -1441,6 +1530,11 @@ async def generate_ai_reply(provider, credential, config, session, recipient, me
         }
 
     options = json_value(config.get("cupidbot"))
+    response_language = str(options.get("responseLanguage") or "English")
+    response_language_code = {
+        "English": "en", "Italian": "it", "Spanish": "es", "French": "fr",
+        "German": "de", "Portuguese": "pt", "Dutch": "nl",
+    }.get(response_language, "en")
     confirmed_index = -1
     for index, item in enumerate(messages):
         if not item.get("isIncoming") and item.get("confirmed") is True:
@@ -1457,8 +1551,10 @@ async def generate_ai_reply(provider, credential, config, session, recipient, me
     body = {
         "accessToken": secret, "version": "0.19.0", "manifestVersion": "0.19.0", "isAPI": True,
         "app": "telegram", "brand": options.get("brand", "cupidbotofm"), "product": options.get("product", "ofm-tg"),
-        "isOF": options.get("isOF", True), "isFemale": True, "accountID": session["id"],
-        "platformSource": "telegram", "responseLanguageCode": "en", "responseLanguage": "english",
+        "isOF": options.get("isOF", True), "isFemale": True,
+        "accountID": f"{credential['id']}:{session['id']}",
+        "platformSource": "telegram", "responseLanguageCode": response_language_code,
+        "responseLanguage": response_language.lower(),
         "isFollowUp": is_followup, "name": model_name, "age": options.get("age", 25),
         "userInfo": options.get("userInfo", f"Your name is {model_name}. You are friendly and engaging."),
         "city": options.get("city") or recipient.get("location") or "New York",
@@ -1495,7 +1591,8 @@ AI_NOT_OUR_TURN = {
 
 async def append_ai_message(connection, record, peer_id, item, recipient=None, limit=100):
     row = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
-      WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', record["id"], peer_id)
+      WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3 FOR UPDATE''',
+      record["campaignId"], record["id"], peer_id)
     messages = json_list(row["messages"]) if row else []
     message_id = str(item.get("telegramMessageId") or item.get("id") or "")
     if message_id and any(str(value.get("telegramMessageId") or value.get("id") or "") == message_id for value in messages):
@@ -1512,9 +1609,11 @@ async def append_ai_message(connection, record, peer_id, item, recipient=None, l
           incoming_at, outgoing_at)
     else:
         await connection.execute('''INSERT INTO "AiChatMemory"
-          (id, "accountId", "sessionId", "peerId", recipient, messages, "lastIncomingAt", "lastOutgoingAt", "createdAt", "updatedAt")
-          VALUES ($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8,NOW(),NOW())''', f"aim_{uuid.uuid4().hex}", record["accountId"],
-          record["id"], peer_id, json.dumps(recipient) if recipient else None, json.dumps(messages), incoming_at, outgoing_at)
+          (id, "campaignId", "accountId", "sessionId", "peerId", recipient, messages,
+           "lastIncomingAt", "lastOutgoingAt", "createdAt", "updatedAt")
+          VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9,NOW(),NOW())''',
+          f"aim_{uuid.uuid4().hex}", record["campaignId"], record["accountId"], record["id"],
+          peer_id, json.dumps(recipient) if recipient else None, json.dumps(messages), incoming_at, outgoing_at)
     return True
 
 
@@ -1531,14 +1630,16 @@ async def ingest_ai_message(pool, record, message):
         "id": str(peer_id), "name": " ".join(filter(None, [user.first_name, user.last_name])),
         "username": user.username or "", "bio": "", "location": "",
     }
-    settings = await pool.fetchrow('''SELECT a.config AS "accountConfig", s.config AS "sessionConfig"
-      FROM "AiSessionSetting" s JOIN "AiAccountSetting" a ON a."accountId" = s."accountId"
-      LEFT JOIN "AiChatSetting" c ON c."sessionId" = s."sessionId" AND c."peerId" = $2
-      WHERE s."sessionId" = $1 AND s.enabled = TRUE AND a.enabled = TRUE AND COALESCE(c.enabled, TRUE) = TRUE''',
-      record["id"], peer_id)
+    settings = await pool.fetchrow('''SELECT c.config AS "campaignConfig", c.status
+      FROM "AiCampaignSession" membership JOIN "AiCampaign" c ON c.id = membership."campaignId"
+      LEFT JOIN "AiChatSetting" chat ON chat."campaignId" = c.id
+        AND chat."sessionId" = membership."sessionId" AND chat."peerId" = $3
+      WHERE membership.id = $1 AND membership."activeSessionId" = $2
+        AND c.status IN ('starting','running','credit_grace') AND COALESCE(chat.enabled, TRUE) = TRUE''',
+      record["membershipId"], record["id"], peer_id)
     if not settings:
         return
-    config = ai_config(settings["accountConfig"], settings["sessionConfig"])
+    config = ai_config(settings["campaignConfig"], None)
     timestamp = getattr(message, "date", None)
     timestamp_ms = int(as_utc(timestamp).timestamp() * 1000) if timestamp else int(datetime.now().timestamp() * 1000)
     item = {
@@ -1551,17 +1652,22 @@ async def ingest_ai_message(pool, record, message):
         appended = await append_ai_message(connection, record, peer_id, item, recipient, config["memoryMessageLimit"])
         if not appended:
             return
-        pending = await connection.fetchrow('''SELECT id FROM "AiChatJob" WHERE "sessionId" = $1 AND "peerId" = $2
-          AND status = 'pending' ORDER BY "createdAt" DESC FOR UPDATE LIMIT 1''', record["id"], peer_id)
+        await connection.execute('''UPDATE "AiCampaign" SET "messagesReceived" = "messagesReceived" + 1,
+          "updatedAt" = NOW() WHERE id = $1''', record["campaignId"])
+        pending = await connection.fetchrow('''SELECT id FROM "AiChatJob" WHERE "campaignId" = $1
+          AND "sessionId" = $2 AND "peerId" = $3 AND status = 'pending'
+          ORDER BY "createdAt" DESC FOR UPDATE LIMIT 1''', record["campaignId"], record["id"], peer_id)
         if pending:
             await connection.execute('''UPDATE "AiChatJob" SET "incomingMsgId" = $2, "requestPayload" = $3::jsonb,
               "runAfter" = $4, "updatedAt" = NOW() WHERE id = $1''', pending["id"], int(message.id),
               json.dumps({"incomingText": item["msg"], "recipient": recipient}), run_after)
         else:
             await connection.execute('''INSERT INTO "AiChatJob"
-              (id, "accountId", "sessionId", "peerId", "incomingMsgId", status, "requestPayload", "runAfter", "createdAt", "updatedAt")
-              VALUES ($1,$2,$3,$4,$5,'pending',$6::jsonb,$7,NOW(),NOW()) ON CONFLICT ("sessionId", "incomingMsgId") DO NOTHING''',
-              f"aij_{uuid.uuid4().hex}", record["accountId"], record["id"], peer_id, int(message.id),
+              (id, "campaignId", "accountId", "sessionId", "peerId", "incomingMsgId", status,
+               "requestPayload", "runAfter", "createdAt", "updatedAt")
+              VALUES ($1,$2,$3,$4,$5,$6,'pending',$7::jsonb,$8,NOW(),NOW())
+              ON CONFLICT ("campaignId", "sessionId", "incomingMsgId") DO NOTHING''',
+              f"aij_{uuid.uuid4().hex}", record["campaignId"], record["accountId"], record["id"], peer_id, int(message.id),
               json.dumps({"incomingText": item["msg"], "recipient": recipient}), run_after)
     await pool.execute('UPDATE "TelegramSession" SET "repliesReceived" = "repliesReceived" + 1, "lastActiveAt" = NOW() WHERE id = $1', record["id"])
 
@@ -1579,9 +1685,11 @@ async def run_ai_catchup(pool, record, client):
                 continue
             if not message or message.outgoing or not message.date or as_utc(message.date) < cutoff:
                 continue
-            before = await pool.fetchval('SELECT COUNT(*) FROM "AiChatJob" WHERE "sessionId" = $1', record["id"])
+            before = await pool.fetchval('''SELECT COUNT(*) FROM "AiChatJob"
+              WHERE "campaignId" = $1 AND "sessionId" = $2''', record["campaignId"], record["id"])
             await ingest_ai_message(pool, record, message)
-            after = await pool.fetchval('SELECT COUNT(*) FROM "AiChatJob" WHERE "sessionId" = $1', record["id"])
+            after = await pool.fetchval('''SELECT COUNT(*) FROM "AiChatJob"
+              WHERE "campaignId" = $1 AND "sessionId" = $2''', record["campaignId"], record["id"])
             if after > before:
                 enqueued += 1
                 await asyncio.sleep(0.5)
@@ -1589,11 +1697,14 @@ async def run_ai_catchup(pool, record, client):
     except Exception as error:
         log.warning("AI catch-up %s failed: %s", record["id"], error)
     finally:
-        await pool.execute('''UPDATE "AiSessionSetting" SET "catchupRequested" = FALSE,
-          "catchupClaimedAt" = NULL, "updatedAt" = NOW() WHERE "sessionId" = $1''', record["id"])
+        await pool.execute('''UPDATE "AiCampaignSession" SET "catchupRequested" = FALSE,
+          "catchupClaimedAt" = NULL, "updatedAt" = NOW() WHERE id = $1''', record["membershipId"])
 
 
 async def start_ai_client(pool, record):
+    if record["id"] in AI_BUSY_SESSIONS:
+        return
+    AI_BUSY_SESSIONS.add(record["id"])
     client = None
     try:
         session_string = canonical_session(decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"])
@@ -1607,73 +1718,151 @@ async def start_ai_client(pool, record):
 
         client.add_handler(MessageHandler(incoming, filters.private & filters.incoming))
         await asyncio.wait_for(client.start(), timeout=60)
-        AI_CLIENTS[record["id"]] = {
-            "client": client, "record": record, "pool": pool, "leases": 0, "stopRequested": False,
+        client_key = f"{record['campaignId']}:{record['id']}"
+        AI_CLIENTS[client_key] = {
+            "client": client, "record": record, "pool": pool, "leases": 0,
+            "stopRequested": False, "disconnectedAt": None,
         }
-        await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'listening',
+        await pool.execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'listening',
           "lastConnectedAt" = NOW(), "lastHeartbeatAt" = NOW(), "lastError" = NULL, "updatedAt" = NOW()
-          WHERE "sessionId" = $1''', record["id"])
-        log.info("AI listener started for %s", record["id"])
+          WHERE id = $1''', record["membershipId"])
+        await pool.execute('''UPDATE "AiCampaign" SET status = 'running', "lastError" = NULL,
+          "updatedAt" = NOW() WHERE id = $1 AND status = 'starting' ''', record["campaignId"])
+        log.info("AI listener started for campaign=%s session=%s", record["campaignId"], record["id"])
         if record.get("catchupRequested"):
-            task = asyncio.create_task(run_ai_catchup(pool, record, client), name=f"catchup:{record['id']}")
+            task = asyncio.create_task(run_ai_catchup(pool, record, client), name=f"catchup:{client_key}")
             AI_CATCHUP_TASKS.add(task)
             task.add_done_callback(AI_CATCHUP_TASKS.discard)
     except Exception as error:
         await disconnect(client)
-        await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = 'error', "lastError" = $2,
-          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', record["id"], str(error)[:2000])
-        log.warning("AI listener %s failed: %s", record["id"], error)
+        await pool.execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'error', "lastError" = $2,
+          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', record["membershipId"], str(error)[:2000])
+        await pool.execute('''UPDATE "AiCampaign" SET "lastError" = $2, "updatedAt" = NOW()
+          WHERE id = $1''', record["campaignId"], str(error)[:2000])
+        log.warning("AI listener campaign=%s session=%s failed: %s", record["campaignId"], record["id"], error)
+    finally:
+        AI_BUSY_SESSIONS.discard(record["id"])
 
 
-async def stop_ai_client(pool, session_id, status="stopped"):
-    entry = AI_CLIENTS.get(session_id)
+async def stop_ai_client(pool, client_key, status="stopped"):
+    entry = AI_CLIENTS.get(client_key)
     if entry:
         if int(entry.get("leases", 0)) > 0:
             entry["stopRequested"] = True
             status = "stopping"
         else:
-            AI_CLIENTS.pop(session_id, None)
+            AI_CLIENTS.pop(client_key, None)
             with suppress(Exception):
                 await entry["client"].stop()
-    await pool.execute('''UPDATE "AiSessionSetting" SET "runtimeStatus" = $2,
-      "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE "sessionId" = $1''', session_id, status)
+        await pool.execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = $2,
+          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', entry["record"]["membershipId"], status)
+
+
+async def reconcile_ai_campaigns(pool):
+    async with pool.acquire() as connection, connection.transaction():
+        terminal_ids = await connection.fetch('''UPDATE "AiCampaign" SET
+          status = CASE WHEN status = 'credit_grace' AND "creditGraceEndsAt" <= NOW()
+            THEN 'grace_expired' ELSE 'expired' END,
+          "stoppedAt" = NOW(), "lastError" = CASE
+            WHEN status = 'credit_grace' AND "creditGraceEndsAt" <= NOW()
+            THEN 'Credit refill grace period expired' ELSE 'Campaign duration completed' END,
+          "updatedAt" = NOW()
+          WHERE status IN ('starting','running','credit_grace')
+            AND (("endsAt" IS NOT NULL AND "endsAt" <= NOW())
+              OR (status = 'credit_grace' AND "creditGraceEndsAt" <= NOW()))
+          RETURNING id''')
+        ids = [row["id"] for row in terminal_ids]
+        if ids:
+            await connection.execute('''UPDATE "AiCampaignSession" SET "activeSessionId" = NULL,
+              "runtimeStatus" = 'stopping', "updatedAt" = NOW() WHERE "campaignId" = ANY($1::text[])''', ids)
+            await connection.execute('''UPDATE "AiChatJob" SET status = 'cancelled',
+              "errorCode" = 'CAMPAIGN_ENDED', "errorMessage" = 'Campaign is no longer active',
+              "finishedAt" = NOW(), "updatedAt" = NOW()
+              WHERE "campaignId" = ANY($1::text[]) AND status = 'pending' ''', ids)
+
+        await connection.execute('''UPDATE "AiCampaign" campaign SET status = 'credit_grace',
+          "creditGraceStartedAt" = COALESCE(campaign."creditGraceStartedAt", NOW()),
+          "creditGraceEndsAt" = COALESCE(campaign."creditGraceEndsAt", NOW() + INTERVAL '24 hours'),
+          "lastError" = 'AI replies paused until workspace credits are refilled', "updatedAt" = NOW()
+          FROM "ValidatorAccount" account WHERE account.id = campaign."accountId"
+            AND campaign.status IN ('starting','running') AND account."creditsBalance" < 5''')
+        await connection.execute('''UPDATE "AiCampaign" campaign SET status = 'running',
+          "creditGraceStartedAt" = NULL, "creditGraceEndsAt" = NULL, "lastError" = NULL,
+          "updatedAt" = NOW() FROM "ValidatorAccount" account
+          WHERE account.id = campaign."accountId" AND campaign.status = 'credit_grace'
+            AND account.active = TRUE AND account."creditsBalance" >= 5''')
 
 
 async def reconcile_ai_clients(pool):
-    rows = await pool.fetch('''SELECT s.*, c."apiId", c."apiHashEncrypted", a."catchupRequested"
-      FROM "AiSessionSetting" a JOIN "AiAccountSetting" aa ON aa."accountId" = a."accountId"
-      JOIN "TelegramSession" s ON s.id = a."sessionId"
-      JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
-      WHERE a.enabled = TRUE AND aa.enabled = TRUE AND s.status = 'active' AND s."isLoggedIn" = TRUE
-        AND s."spamStatus" <> 'frozen'
-        AND (a."runtimeStatus" <> 'error' OR a."lastHeartbeatAt" IS NULL
-          OR a."lastHeartbeatAt" < NOW() - INTERVAL '1 minute')''')
-    wanted = {row["id"]: dict(row) for row in rows}
-    for session_id in list(AI_CLIENTS):
-        entry = AI_CLIENTS[session_id]
-        if session_id not in wanted or not entry["client"].is_connected:
-            await stop_ai_client(pool, session_id, "stopped" if session_id not in wanted else "error")
-    for session_id, record in wanted.items():
+    await reconcile_ai_campaigns(pool)
+    rows = await pool.fetch('''SELECT s.*, credential."apiId", credential."apiHashEncrypted",
+        membership.id AS "membershipId", membership."campaignId", membership."catchupRequested",
+        campaign.config AS "campaignConfig", campaign.status AS "campaignStatus"
+      FROM "AiCampaignSession" membership
+      JOIN "AiCampaign" campaign ON campaign.id = membership."campaignId"
+      JOIN "TelegramSession" s ON s.id = membership."sessionId"
+      JOIN "TelegramApiCredential" credential ON credential.id = s."credentialId"
+      WHERE membership."activeSessionId" = s.id
+        AND campaign.status IN ('starting','running','credit_grace')
+        AND s.status = 'active' AND s."isLoggedIn" = TRUE AND s."spamStatus" <> 'frozen'
+        AND (membership."runtimeStatus" <> 'error' OR membership."lastHeartbeatAt" IS NULL
+          OR membership."lastHeartbeatAt" < NOW() - INTERVAL '1 minute')''')
+    wanted = {f"{row['campaignId']}:{row['id']}": dict(row) for row in rows}
+    log.info("AI reconcile: wanted=%d busy=%d connected=%d", len(wanted), len(AI_BUSY_SESSIONS), len(AI_CLIENTS))
+    now = asyncio.get_running_loop().time()
+    for client_key in list(AI_CLIENTS):
+        entry = AI_CLIENTS[client_key]
+        if client_key not in wanted:
+            await stop_ai_client(pool, client_key)
+            continue
+        entry["stopRequested"] = False
+        if entry["client"].is_connected:
+            entry["disconnectedAt"] = None
+            continue
+        if entry.get("disconnectedAt") is None:
+            entry["disconnectedAt"] = now
+            continue
+        if now - entry["disconnectedAt"] >= max(30, AI_RECONCILE_SECONDS * 3):
+            await stop_ai_client(pool, client_key, "error")
+    connected_memberships = [entry["record"]["membershipId"] for entry in AI_CLIENTS.values()]
+    if connected_memberships:
+        await pool.execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'stopped',
+          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW()
+          WHERE "activeSessionId" IS NULL AND "runtimeStatus" = 'stopping'
+            AND NOT (id = ANY($1::text[]))''', connected_memberships)
+    else:
+        await pool.execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'stopped',
+          "lastHeartbeatAt" = NOW(), "updatedAt" = NOW()
+          WHERE "activeSessionId" IS NULL AND "runtimeStatus" = 'stopping' ''')
+    for client_key, record in wanted.items():
+        session_id = record["id"]
         if session_id in AI_BUSY_SESSIONS:
             continue
-        if session_id not in AI_CLIENTS:
+        if any(entry["record"]["id"] == session_id for entry in AI_CLIENTS.values() if entry["record"]["campaignId"] != record["campaignId"]):
+            continue
+        if client_key not in AI_CLIENTS:
             await start_ai_client(pool, record)
         else:
-            await pool.execute('UPDATE "AiSessionSetting" SET "lastHeartbeatAt" = NOW() WHERE "sessionId" = $1', session_id)
+            await pool.execute('''UPDATE "AiCampaignSession" SET "lastHeartbeatAt" = NOW()
+              WHERE id = $1''', record["membershipId"])
             if record.get("catchupRequested") and not any(
-                task.get_name() == f"catchup:{session_id}" for task in AI_CATCHUP_TASKS if not task.done()
+                task.get_name() == f"catchup:{client_key}" for task in AI_CATCHUP_TASKS if not task.done()
             ):
-                task = asyncio.create_task(run_ai_catchup(pool, record, AI_CLIENTS[session_id]["client"]), name=f"catchup:{session_id}")
+                task = asyncio.create_task(run_ai_catchup(pool, record, AI_CLIENTS[client_key]["client"]), name=f"catchup:{client_key}")
                 AI_CATCHUP_TASKS.add(task)
                 task.add_done_callback(AI_CATCHUP_TASKS.discard)
 
 
 async def claim_ai_job(pool):
     async with pool.acquire() as connection, connection.transaction():
-        row = await connection.fetchrow('''SELECT * FROM "AiChatJob" WHERE status = 'pending' AND "runAfter" <= NOW()
+        row = await connection.fetchrow('''SELECT job.* FROM "AiChatJob" job
+          JOIN "AiCampaign" campaign ON campaign.id = job."campaignId"
+          WHERE job.status = 'pending' AND job."runAfter" <= NOW()
+            AND campaign.status IN ('starting','running')
           AND NOT EXISTS (SELECT 1 FROM "AiChatJob" active WHERE active.status = 'processing'
-            AND active."sessionId" = "AiChatJob"."sessionId" AND active."peerId" = "AiChatJob"."peerId")
-          ORDER BY "runAfter", "createdAt" FOR UPDATE SKIP LOCKED LIMIT 1''')
+            AND active."campaignId" = job."campaignId" AND active."sessionId" = job."sessionId"
+            AND active."peerId" = job."peerId")
+          ORDER BY job."runAfter", job."createdAt" FOR UPDATE OF job SKIP LOCKED LIMIT 1''')
         if row:
             await connection.execute('''UPDATE "AiChatJob" SET status = 'processing', attempts = attempts + 1,
               "claimedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', row["id"])
@@ -1683,14 +1872,67 @@ async def claim_ai_job(pool):
 async def ai_log(pool, job, provider, status, *, response=None, text=None, category=None, outgoing_id=None, error=None):
     request = json_value(job.get("requestPayload"))
     await pool.execute('''INSERT INTO "AiResponseLog"
-      (id, "accountId", "sessionId", "jobId", "peerId", "incomingMsgId", "outgoingMsgId", provider,
+      (id, "campaignId", "accountId", "sessionId", "jobId", "peerId", "incomingMsgId", "outgoingMsgId", provider,
        status, category, "incomingText", "responseText", "isFollowUp", "didConvert", "errorCode",
        "errorMessage", "providerMeta", "createdAt")
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,NOW())''',
-      f"ail_{uuid.uuid4().hex}", job["accountId"], job["sessionId"], job["id"], job["peerId"],
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18::jsonb,NOW())''',
+      f"ail_{uuid.uuid4().hex}", job["campaignId"], job["accountId"], job["sessionId"], job["id"], job["peerId"],
       job.get("incomingMsgId"), outgoing_id, provider, status, category, request.get("incomingText"), text,
       bool(job.get("isFollowUp")), bool(response and response.get("didConvert")), error_code(error) if error else None,
       str(error)[:2000] if error else None, json.dumps(response.get("meta")) if response else None)
+
+
+async def reserve_ai_credit(pool, job):
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.fetchval('SELECT pg_advisory_xact_lock(hashtext($1))', job["id"])
+        existing = await connection.fetchval('''SELECT COALESCE(SUM(amount), 0) FROM "ValidatorCreditTransaction"
+          WHERE "referenceType" = 'ai_job' AND "referenceId" = $1''', job["id"])
+        if int(existing or 0) <= -5:
+            return True
+        row = await connection.fetchrow('''SELECT account.id, account."creditsBalance", campaign.status
+          FROM "ValidatorAccount" account JOIN "AiCampaign" campaign ON campaign."accountId" = account.id
+          WHERE campaign.id = $1 AND account.active = TRUE FOR UPDATE OF account, campaign''', job["campaignId"])
+        if not row or row["status"] not in ("starting", "running"):
+            return False
+        if row["creditsBalance"] < 5:
+            await connection.execute('''UPDATE "AiCampaign" SET status = 'credit_grace',
+              "creditGraceStartedAt" = COALESCE("creditGraceStartedAt", NOW()),
+              "creditGraceEndsAt" = COALESCE("creditGraceEndsAt", NOW() + INTERVAL '24 hours'),
+              "lastError" = 'AI replies paused until workspace credits are refilled', "updatedAt" = NOW()
+              WHERE id = $1''', job["campaignId"])
+            return False
+        await connection.execute('''UPDATE "ValidatorAccount" SET "creditsBalance" = "creditsBalance" - 5,
+          "creditsSpent" = "creditsSpent" + 5, "updatedAt" = NOW() WHERE id = $1''', job["accountId"])
+        remaining = row["creditsBalance"] - 5
+        await connection.execute('''INSERT INTO "ValidatorCreditTransaction"
+          (id, "accountId", amount, "balanceAfter", kind, "taskCode", description,
+           "referenceType", "referenceId", metadata, "createdAt")
+          VALUES ($1,$2,-5,$3,'debit','ai_chat_send','AI message send reserved',
+            'ai_job',$4,$5::jsonb,NOW())''', f"txn_{uuid.uuid4().hex}", job["accountId"], remaining,
+          job["id"], json.dumps({"campaignId": job["campaignId"]}))
+        await connection.execute('''UPDATE "AiCampaign" SET "creditsUsed" = "creditsUsed" + 5,
+          "updatedAt" = NOW() WHERE id = $1''', job["campaignId"])
+        return True
+
+
+async def refund_ai_credit(pool, job):
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.fetchval('SELECT pg_advisory_xact_lock(hashtext($1))', job["id"])
+        reserved = await connection.fetchval('''SELECT COALESCE(SUM(amount), 0)
+          FROM "ValidatorCreditTransaction" WHERE "referenceType" = 'ai_job' AND "referenceId" = $1''', job["id"])
+        if int(reserved or 0) >= 0:
+            return
+        balance = await connection.fetchval('''UPDATE "ValidatorAccount" SET
+          "creditsBalance" = "creditsBalance" + 5, "creditsSpent" = GREATEST(0, "creditsSpent" - 5),
+          "updatedAt" = NOW() WHERE id = $1 RETURNING "creditsBalance"''', job["accountId"])
+        await connection.execute('''INSERT INTO "ValidatorCreditTransaction"
+          (id, "accountId", amount, "balanceAfter", kind, "taskCode", description,
+           "referenceType", "referenceId", metadata, "createdAt")
+          VALUES ($1,$2,5,$3,'refund','ai_chat_send','AI message was not sent',
+            'ai_job',$4,$5::jsonb,NOW())''', f"txn_{uuid.uuid4().hex}", job["accountId"], balance,
+          job["id"], json.dumps({"campaignId": job["campaignId"]}))
+        await connection.execute('''UPDATE "AiCampaign" SET "creditsUsed" = GREATEST(0, "creditsUsed" - 5),
+          "updatedAt" = NOW() WHERE id = $1''', job["campaignId"])
 
 
 async def finish_ai_job(pool, job, status, result=None, error=None, retry=False):
@@ -1711,15 +1953,16 @@ async def cancel_covered_ai_jobs(pool, job, incoming_id):
         return
     await pool.execute('''UPDATE "AiChatJob" SET status = 'cancelled', "finishedAt" = NOW(),
       "resultPayload" = '{"reason":"coalesced_into_previous_reply"}'::jsonb, "updatedAt" = NOW()
-      WHERE "sessionId" = $1 AND "peerId" = $2 AND status = 'pending'
-        AND "incomingMsgId" IS NOT NULL AND "incomingMsgId" <= $3''',
-      job["sessionId"], job["peerId"], incoming_id)
+      WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3 AND status = 'pending'
+        AND "incomingMsgId" IS NOT NULL AND "incomingMsgId" <= $4''',
+      job["campaignId"], job["sessionId"], job["peerId"], incoming_id)
 
 
 async def confirm_ai_outgoing_messages(pool, job):
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
-          WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', job["sessionId"], job["peerId"])
+          WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3 FOR UPDATE''',
+          job["campaignId"], job["sessionId"], job["peerId"])
         if not row:
             return
         messages = [
@@ -1732,32 +1975,40 @@ async def confirm_ai_outgoing_messages(pool, job):
 
 async def process_ai_job(pool, job):
     provider = "capitalbot"
+    credit_reserved = False
+    telegram_sent = False
     try:
         context = await pool.fetchrow('''SELECT j.*, s.label, s."firstName", s."lastName", s.username,
-          s.status AS "sessionStatus", s."isLoggedIn", s."spamStatus", ss.enabled AS "sessionEnabled",
-          ss.config AS "sessionConfig", aa.enabled AS "accountEnabled", aa.config AS "accountConfig"
+          s.status AS "sessionStatus", s."isLoggedIn", s."spamStatus",
+          membership.id AS "membershipId", membership."activeSessionId",
+          campaign.status AS "campaignStatus", campaign.config AS "campaignConfig",
+          campaign.provider, campaign."secretEncrypted", campaign."credentialValid",
+          campaign."modelId", campaign."presetId"
           FROM "AiChatJob" j JOIN "TelegramSession" s ON s.id = j."sessionId"
-          JOIN "AiSessionSetting" ss ON ss."sessionId" = s.id
-          JOIN "AiAccountSetting" aa ON aa."accountId" = j."accountId" WHERE j.id = $1''', job["id"])
-        if not context or not context["accountEnabled"] or not context["sessionEnabled"]:
+          JOIN "AiCampaign" campaign ON campaign.id = j."campaignId"
+          JOIN "AiCampaignSession" membership ON membership."campaignId" = campaign.id
+            AND membership."sessionId" = j."sessionId" WHERE j.id = $1''', job["id"])
+        if not context or context["campaignStatus"] not in ("starting", "running") or not context["activeSessionId"]:
             await finish_ai_job(pool, job, "cancelled")
             return
         if context["sessionStatus"] != "active" or not context["isLoggedIn"] or context["spamStatus"] == "frozen":
             raise RuntimeError("AI session is not available")
         chat_enabled = await pool.fetchval('''SELECT enabled FROM "AiChatSetting"
-          WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"])
+          WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3''',
+          job["campaignId"], job["sessionId"], job["peerId"])
         if chat_enabled is False:
             await finish_ai_job(pool, job, "cancelled")
             return
-        config = ai_config(context["accountConfig"], context["sessionConfig"])
-        provider = config["provider"]
-        credential_row = await pool.fetchrow('''SELECT * FROM "AiProviderCredential"
-          WHERE "accountId" = $1 AND provider = $2 AND "isValid" = TRUE''', job["accountId"], provider)
-        if not credential_row:
+        config = ai_config(context["campaignConfig"], None)
+        provider = str(context["provider"])
+        if not context["credentialValid"]:
             raise ValueError(f"No valid {provider} credential is configured")
-        credential = dict(credential_row)
-        memory = await pool.fetchrow('''SELECT * FROM "AiChatMemory" WHERE "sessionId" = $1 AND "peerId" = $2''',
-          job["sessionId"], job["peerId"])
+        credential = {
+            "id": job["campaignId"], "secretEncrypted": context["secretEncrypted"],
+            "modelId": context["modelId"], "presetId": context["presetId"],
+        }
+        memory = await pool.fetchrow('''SELECT * FROM "AiChatMemory" WHERE "campaignId" = $1
+          AND "sessionId" = $2 AND "peerId" = $3''', job["campaignId"], job["sessionId"], job["peerId"])
         if not memory:
             raise ValueError("Conversation memory is empty")
         messages = json_list(memory["messages"])[-config["memoryMessageLimit"]:]
@@ -1779,36 +2030,78 @@ async def process_ai_job(pool, job):
             await confirm_ai_outgoing_messages(pool, job)
         category = response.get("category")
         if category in AI_NOT_OUR_TURN:
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
             await ai_log(pool, job, provider, "not_our_turn", response=response, category=category)
             await finish_ai_job(pool, job, "not_our_turn", response)
             return
         if category in AI_GHOSTING:
-            await pool.execute('''UPDATE "AiChatMemory" SET "conversationState" = 'ghosted', "lastCategory" = $3,
-              "updatedAt" = NOW() WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"], category)
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
+            await pool.execute('''UPDATE "AiChatMemory" SET "conversationState" = 'ghosted', "lastCategory" = $4,
+              "updatedAt" = NOW() WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3''',
+              job["campaignId"], job["sessionId"], job["peerId"], category)
             await ai_log(pool, job, provider, "ghosting", response=response, category=category)
             await finish_ai_job(pool, job, "ghosting", response)
             return
         text = str(response.get("text") or "").strip()
         if not text:
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
             status = "converted" if response.get("didConvert") else "no_reply"
             await ai_log(pool, job, provider, status, response=response, category=category)
             await finish_ai_job(pool, job, status, response)
             return
         latest_memory = await pool.fetchval('''SELECT messages FROM "AiChatMemory"
-          WHERE "sessionId" = $1 AND "peerId" = $2''', job["sessionId"], job["peerId"])
+          WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3''',
+          job["campaignId"], job["sessionId"], job["peerId"])
         latest_incoming_id = max(
             (int(item["telegramMessageId"]) for item in json_list(latest_memory)
              if item.get("isIncoming") and item.get("telegramMessageId") is not None),
             default=None,
         )
         if covered_incoming_id is not None and latest_incoming_id is not None and latest_incoming_id > covered_incoming_id:
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
             await ai_log(pool, job, provider, "superseded", response=response, text=text, category=category)
             await finish_ai_job(pool, job, "superseded", {**response, "reason": "newer_incoming_message"})
             return
-        entry = AI_CLIENTS.get(job["sessionId"])
+        client_key = f"{job['campaignId']}:{job['sessionId']}"
+        entry = AI_CLIENTS.get(client_key)
         if not entry or not entry["client"].is_connected:
             raise ConnectionError("AI listener is not connected")
+        still_active = await pool.fetchval('''SELECT EXISTS(
+          SELECT 1 FROM "AiCampaign" campaign JOIN "AiCampaignSession" membership
+            ON membership."campaignId" = campaign.id
+          WHERE campaign.id = $1 AND campaign.status IN ('starting','running')
+            AND membership."sessionId" = $2 AND membership."activeSessionId" = $2)''',
+          job["campaignId"], job["sessionId"])
+        if not still_active:
+            await finish_ai_job(pool, job, "cancelled")
+            return
+        credit_reserved = await reserve_ai_credit(pool, job)
+        if not credit_reserved:
+            campaign_status = await pool.fetchval('SELECT status FROM "AiCampaign" WHERE id = $1', job["campaignId"])
+            if campaign_status == "credit_grace":
+                await pool.execute('''UPDATE "AiChatJob" SET status = 'pending', attempts = GREATEST(0, attempts - 1),
+                  "runAfter" = NOW() + INTERVAL '1 minute', "claimedAt" = NULL, "errorCode" = 'CREDIT_GRACE',
+                  "errorMessage" = 'Waiting for workspace credit refill', "updatedAt" = NOW() WHERE id = $1''', job["id"])
+            else:
+                await finish_ai_job(pool, job, "cancelled")
+            return
+        still_active = await pool.fetchval('''SELECT EXISTS(
+          SELECT 1 FROM "AiCampaign" campaign JOIN "AiCampaignSession" membership
+            ON membership."campaignId" = campaign.id
+          WHERE campaign.id = $1 AND campaign.status IN ('starting','running')
+            AND membership."sessionId" = $2 AND membership."activeSessionId" = $2)''',
+          job["campaignId"], job["sessionId"])
+        if not still_active:
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
+            await finish_ai_job(pool, job, "cancelled")
+            return
         sent = await asyncio.wait_for(entry["client"].send_message(int(job["peerId"]), text, parse_mode=enums.ParseMode.DISABLED), timeout=45)
+        telegram_sent = True
         outgoing = {
             "id": f"tg-ai-{sent.id}", "telegramMessageId": int(sent.id),
             "timestamp": int(datetime.now().timestamp() * 1000), "msg": text, "isIncoming": False,
@@ -1816,7 +2109,8 @@ async def process_ai_job(pool, job):
         }
         async with pool.acquire() as connection, connection.transaction():
             current = await connection.fetchrow('''SELECT id, messages FROM "AiChatMemory"
-              WHERE "sessionId" = $1 AND "peerId" = $2 FOR UPDATE''', job["sessionId"], job["peerId"])
+              WHERE "campaignId" = $1 AND "sessionId" = $2 AND "peerId" = $3 FOR UPDATE''',
+              job["campaignId"], job["sessionId"], job["peerId"])
             stored = json_list(current["messages"])
             if provider == "cupidbot":
                 stored = [{**item, "confirmed": True} if not item.get("isIncoming") else item for item in stored]
@@ -1826,16 +2120,28 @@ async def process_ai_job(pool, job):
               current["id"], json.dumps(stored), category)
             await connection.execute('''UPDATE "TelegramSession" SET "messagesSent" = "messagesSent" + 1,
               "lastActiveAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', job["sessionId"])
+            await connection.execute('''UPDATE "AiCampaign" SET "messagesSent" = "messagesSent" + 1,
+              "lastError" = NULL, "updatedAt" = NOW() WHERE id = $1''', job["campaignId"])
         await ai_log(pool, job, provider, "sent", response=response, text=text, category=category, outgoing_id=int(sent.id))
         await finish_ai_job(pool, job, "sent", {**response, "text": text, "outgoingMessageId": int(sent.id)})
     except Exception as error:
+        if not telegram_sent:
+            await refund_ai_credit(pool, job)
+            credit_reserved = False
+        campaign_status = await pool.fetchval('SELECT status FROM "AiCampaign" WHERE id = $1', job["campaignId"])
+        if campaign_status not in ("starting", "running"):
+            await finish_ai_job(pool, job, "cancelled", error=error)
+            return
         retry = isinstance(error, (ConnectionError, TimeoutError, FloodWait)) or (isinstance(error, AiProviderError) and error.transient)
         if isinstance(error, (FloodWait, PeerFlood, *SESSION_DEAD_ERRORS)):
-            session = AI_CLIENTS.get(job["sessionId"], {}).get("record")
+            session = AI_CLIENTS.get(f"{job['campaignId']}:{job['sessionId']}", {}).get("record")
             if session:
-                await record_session_signal(pool, session, None, error, getattr(error, "value", 0))
+                await record_session_signal(pool, session, job["campaignId"], error, getattr(error, "value", 0))
         await ai_log(pool, job, provider, "failed", error=error)
         await finish_ai_job(pool, job, "failed", error=error, retry=retry)
+        if not retry or int(job["attempts"] or 0) + 1 >= int(job["maxAttempts"] or 3):
+            await pool.execute('''UPDATE "AiCampaign" SET "failedCount" = "failedCount" + 1,
+              "lastError" = $2, "updatedAt" = NOW() WHERE id = $1''', job["campaignId"], str(error)[:2000])
         log.warning("AI job %s failed: %s", job["id"], error)
 
 
@@ -1849,14 +2155,18 @@ async def ai_job_worker(pool):
 
 
 async def scan_ai_reengagement(pool):
-    rows = await pool.fetch('''SELECT m.*, aa.config AS "accountConfig", ss.config AS "sessionConfig"
-      FROM "AiChatMemory" m JOIN "AiSessionSetting" ss ON ss."sessionId" = m."sessionId"
-      JOIN "AiAccountSetting" aa ON aa."accountId" = m."accountId"
-      LEFT JOIN "AiChatSetting" cs ON cs."sessionId" = m."sessionId" AND cs."peerId" = m."peerId"
-      WHERE aa.enabled = TRUE AND aa."reengageEnabled" = TRUE AND ss.enabled = TRUE AND COALESCE(cs.enabled, TRUE) = TRUE
+    rows = await pool.fetch('''SELECT m.* FROM "AiChatMemory" m
+      JOIN "AiCampaign" campaign ON campaign.id = m."campaignId"
+      JOIN "AiCampaignSession" membership ON membership."campaignId" = m."campaignId"
+        AND membership."sessionId" = m."sessionId"
+      LEFT JOIN "AiChatSetting" cs ON cs."campaignId" = m."campaignId"
+        AND cs."sessionId" = m."sessionId" AND cs."peerId" = m."peerId"
+      WHERE campaign.status IN ('starting','running') AND campaign."reengageEnabled" = TRUE
+        AND membership."activeSessionId" = m."sessionId" AND COALESCE(cs.enabled, TRUE) = TRUE
         AND m."conversationState" = 'active' AND m."lastOutgoingAt" > NOW() - INTERVAL '24 hours'
         AND m."lastOutgoingAt" < NOW() - INTERVAL '30 minutes'
-        AND NOT EXISTS (SELECT 1 FROM "AiChatJob" j WHERE j."sessionId" = m."sessionId" AND j."peerId" = m."peerId"
+        AND NOT EXISTS (SELECT 1 FROM "AiChatJob" j WHERE j."campaignId" = m."campaignId"
+          AND j."sessionId" = m."sessionId" AND j."peerId" = m."peerId"
           AND j.status IN ('pending','processing')) ORDER BY m."lastOutgoingAt" LIMIT 8''')
     for row in rows:
         messages = json_list(row["messages"])
@@ -1876,9 +2186,11 @@ async def scan_ai_reengagement(pool):
                 await pool.execute('UPDATE "AiChatMemory" SET reengage = $2::jsonb WHERE id = $1', row["id"], json.dumps({**state, "waitMinutes": wait_minutes}))
             continue
         await pool.execute('''INSERT INTO "AiChatJob"
-          (id, "accountId", "sessionId", "peerId", status, "isFollowUp", "requestPayload", "runAfter", "createdAt", "updatedAt")
-          VALUES ($1,$2,$3,$4,'pending',TRUE,$5::jsonb,NOW(),NOW(),NOW())''', f"aij_{uuid.uuid4().hex}", row["accountId"],
-          row["sessionId"], row["peerId"], json.dumps({"incomingText": None, "recipient": row["recipient"]}))
+          (id, "campaignId", "accountId", "sessionId", "peerId", status, "isFollowUp",
+           "requestPayload", "runAfter", "createdAt", "updatedAt")
+          VALUES ($1,$2,$3,$4,$5,'pending',TRUE,$6::jsonb,NOW(),NOW(),NOW())''',
+          f"aij_{uuid.uuid4().hex}", row["campaignId"], row["accountId"], row["sessionId"], row["peerId"],
+          json.dumps({"incomingText": None, "recipient": row["recipient"]}))
         await pool.execute('''UPDATE "AiChatMemory" SET reengage = $2::jsonb WHERE id = $1''', row["id"], json.dumps({
           "count": count + 1, "lastNudgeAt": int(datetime.now().timestamp() * 1000), "waitMinutes": random_between(120, 240),
         }))
@@ -1892,6 +2204,11 @@ async def ai_runtime(pool):
     try:
         await pool.execute('''UPDATE "AiChatJob" SET status = 'pending', "claimedAt" = NULL,
           "runAfter" = NOW(), "updatedAt" = NOW() WHERE status = 'processing' ''')
+        await pool.execute('''UPDATE "AiChatJob" job SET status = 'cancelled',
+          "errorCode" = 'CAMPAIGN_INACTIVE', "errorMessage" = 'Campaign is no longer active',
+          "finishedAt" = NOW(), "updatedAt" = NOW() FROM "AiCampaign" campaign
+          WHERE campaign.id = job."campaignId" AND campaign.status NOT IN ('starting','running','credit_grace')
+            AND job.status = 'pending' ''')
         while True:
             now = utc_now()
             if (now - last_reconcile).total_seconds() >= AI_RECONCILE_SECONDS:
@@ -1912,12 +2229,227 @@ async def ai_runtime(pool):
             await stop_ai_client(pool, session_id)
 
 
+async def account_settings_tables_exist(pool):
+    return bool(await pool.fetchval('''SELECT to_regclass('public."TelegramAccountSettingsJob"')'''))
+
+
+async def sync_account_settings_batch(pool, batch_id):
+    await pool.execute('''WITH counts AS (
+        SELECT COUNT(*)::int AS total,
+          COUNT(*) FILTER (WHERE status IN ('completed','failed','skipped','cancelled'))::int AS processed,
+          COUNT(*) FILTER (WHERE status = 'completed')::int AS succeeded,
+          COUNT(*) FILTER (WHERE status = 'failed')::int AS failed,
+          COUNT(*) FILTER (WHERE status IN ('skipped','cancelled'))::int AS skipped,
+          COUNT(*) FILTER (WHERE status = 'processing')::int AS processing,
+          COUNT(*) FILTER (WHERE status = 'pending')::int AS pending
+        FROM "TelegramAccountSettingsJob" WHERE "batchId" = $1
+      ) UPDATE "TelegramAccountSettingsBatch" b SET
+        "totalCount" = counts.total, "processedCount" = counts.processed,
+        "succeededCount" = counts.succeeded, "failedCount" = counts.failed,
+        "skippedCount" = counts.skipped,
+        status = CASE
+          WHEN counts.processed = counts.total AND b."cancelRequested" THEN 'cancelled'
+          WHEN counts.processed = counts.total AND counts.succeeded = 0 AND counts.failed > 0 THEN 'failed'
+          WHEN counts.processed = counts.total THEN 'completed'
+          WHEN counts.processing > 0 OR counts.processed > 0 THEN 'running'
+          ELSE 'pending' END,
+        "startedAt" = CASE WHEN counts.processing > 0 OR counts.processed > 0
+          THEN COALESCE(b."startedAt", NOW()) ELSE b."startedAt" END,
+        "finishedAt" = CASE WHEN counts.processed = counts.total THEN COALESCE(b."finishedAt", NOW()) ELSE NULL END,
+        "updatedAt" = NOW()
+      FROM counts WHERE b.id = $1''', batch_id)
+
+
+async def recover_account_settings_jobs(pool):
+    if not await account_settings_tables_exist(pool):
+        return
+    batch_ids = await pool.fetch('''UPDATE "TelegramAccountSettingsJob" SET status = 'pending',
+      "claimedAt" = NULL, "errorCode" = NULL, "errorMessage" = NULL, "updatedAt" = NOW()
+      WHERE status = 'processing' RETURNING "batchId"''')
+    for batch_id in {row["batchId"] for row in batch_ids}:
+        await sync_account_settings_batch(pool, batch_id)
+
+
+async def claim_account_settings_job(pool):
+    if not await account_settings_tables_exist(pool):
+        return None
+    cancelled = await pool.fetch('''UPDATE "TelegramAccountSettingsJob" j
+      SET status = 'cancelled', "result" = '{"skipReason":"cancelled"}'::jsonb,
+        "errorCode" = 'CANCELLED', "errorMessage" = 'Cancelled before processing',
+        "finishedAt" = NOW(), "updatedAt" = NOW()
+      FROM "TelegramAccountSettingsBatch" b WHERE b.id = j."batchId"
+        AND b."cancelRequested" = TRUE AND j.status = 'pending' RETURNING j."batchId"''')
+    for batch_id in {item["batchId"] for item in cancelled}:
+        await sync_account_settings_batch(pool, batch_id)
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow('''SELECT j.* FROM "TelegramAccountSettingsJob" j
+          JOIN "TelegramAccountSettingsBatch" b ON b.id = j."batchId"
+          WHERE j.status = 'pending' AND b."cancelRequested" = FALSE
+          ORDER BY j."createdAt", j.position FOR UPDATE OF j SKIP LOCKED LIMIT 1''')
+        if not row:
+            return None
+        await connection.execute('''UPDATE "TelegramAccountSettingsJob" SET status = 'processing',
+          attempts = attempts + 1, "claimedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', row["id"])
+        await connection.execute('''UPDATE "TelegramAccountSettingsBatch" SET status = 'running',
+          "startedAt" = COALESCE("startedAt", NOW()), "updatedAt" = NOW() WHERE id = $1''', row["batchId"])
+        return dict(row)
+
+
+def account_settings_media_path(account_id, token):
+    if not isinstance(token, str) or not token:
+        raise ValueError("Account-settings media is missing")
+    normalized = token.replace("\\", "/").lstrip("/")
+    if normalized.startswith("avatars/"):
+        root = ACCOUNT_SETTINGS_AVATAR_ROOT
+        relative = normalized[len("avatars/"):]
+    else:
+        if not normalized.startswith(f"{account_id}/"):
+            raise PermissionError("Account-settings media does not belong to this account")
+        root = ACCOUNT_SETTINGS_MEDIA_ROOT
+        relative = normalized
+    resolved = os.path.realpath(os.path.join(root, relative))
+    if os.path.commonpath([root, resolved]) != root or not os.path.isfile(resolved):
+        raise FileNotFoundError("Account-settings media was not found")
+    return resolved
+
+
+async def delete_profile_photos(client):
+    deleted = 0
+    while True:
+        photos = await client.invoke(raw.functions.photos.GetUserPhotos(
+            user_id=raw.types.InputUserSelf(), offset=0, max_id=0, limit=100
+        ))
+        values = list(getattr(photos, "photos", []) or [])
+        if not values:
+            break
+        ids = [raw.types.InputPhoto(id=photo.id, access_hash=photo.access_hash,
+          file_reference=photo.file_reference) for photo in values]
+        for index in range(0, len(ids), 30):
+            await client.invoke(raw.functions.photos.DeletePhotos(id=ids[index:index + 30]))
+        deleted += len(ids)
+        if len(values) < 100:
+            break
+    return deleted
+
+
+async def upload_profile_photo(client, account_id, token):
+    path = account_settings_media_path(account_id, token)
+    uploaded = await client.save_file(path)
+    await client.invoke(raw.functions.photos.UploadProfilePhoto(file=uploaded))
+    return os.path.basename(path)
+
+
+async def send_account_story(client, account_id, payload):
+    me = await client.get_me()
+    if not bool(getattr(me, "is_premium", False)):
+        return "skipped", {"skipReason": "not_premium"}
+    peer = raw.types.InputPeerSelf()
+    if not await client.invoke(raw.functions.stories.CanSendStory(peer=peer)):
+        return "skipped", {"skipReason": "story_limit"}
+    media_path = account_settings_media_path(account_id, payload.get("mediaPath"))
+    uploaded = await client.save_file(media_path)
+    if payload.get("mediaType") == "video":
+        media = raw.types.InputMediaUploadedDocument(
+            file=uploaded, mime_type=payload.get("mimeType") or "video/mp4",
+            attributes=[
+                raw.types.DocumentAttributeVideo(duration=0, w=720, h=1280, supports_streaming=True),
+                raw.types.DocumentAttributeFilename(file_name=os.path.basename(media_path)),
+            ],
+        )
+    else:
+        media = raw.types.InputMediaUploadedPhoto(file=uploaded)
+    privacy = {
+        "contacts": raw.types.InputPrivacyValueAllowContacts,
+        "close_friends": raw.types.InputPrivacyValueAllowCloseFriends,
+    }.get(payload.get("privacy"), raw.types.InputPrivacyValueAllowAll)()
+    caption = str(payload.get("caption") or "")
+    link = str(payload.get("linkUrl") or "")
+    entities = None
+    if link:
+        caption = f"{caption}\n{link}" if caption else link
+        entities = [raw.types.MessageEntityTextUrl(
+            offset=len(caption) - len(link), length=len(link), url=link
+        )]
+    result = await client.invoke(raw.functions.stories.SendStory(
+        peer=peer, media=media, privacy_rules=[privacy], random_id=int.from_bytes(os.urandom(8), "big", signed=True),
+        pinned=bool(payload.get("pinToProfile")), caption=caption or None, entities=entities,
+        period=int(payload.get("periodSeconds") or 86400),
+    ))
+    return "completed", {"success": True, "updates": result.__class__.__name__}
+
+
+async def finish_account_settings_job(pool, job, status, result=None, error=None):
+    await pool.execute('''UPDATE "TelegramAccountSettingsJob" SET status = $2, "result" = $3::jsonb,
+      "errorCode" = $4, "errorMessage" = $5, "finishedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+      job["id"], status, json.dumps(result) if result is not None else None,
+      error_code(error) if error else None, str(error)[:2000] if error else None)
+    await sync_account_settings_batch(pool, job["batchId"])
+
+
+async def execute_account_settings_job(pool, job):
+    session = await pool.fetchrow('''SELECT s.*, c."apiId", c."apiHashEncrypted"
+      FROM "TelegramSession" s JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
+      WHERE s.id = $1 AND s."accountId" = $2''', job["sessionId"], job["accountId"])
+    if not session:
+        await finish_account_settings_job(pool, job, "failed", error=ValueError("Session not found"))
+        return
+    record = dict(session)
+    client = None
+    try:
+        if record["status"] != "active" or not record["isLoggedIn"]:
+            await finish_account_settings_job(pool, job, "skipped", {"skipReason": "not_connected"})
+            return
+        client = await open_campaign_client(record)
+        payload = json_value(job.get("payload"))
+        result = {"success": True}
+        if job["action"] == "update_profile":
+            flags = payload.get("updateFlags") or {}
+            modes = payload.get("fieldModes") or {}
+            profile_fields = {}
+            if flags.get("firstName"):
+                profile_fields["first_name"] = payload.get("firstName", "")
+            if flags.get("lastName"):
+                profile_fields["last_name"] = "" if modes.get("lastName") == "remove" else payload.get("lastName", "")
+            if flags.get("bio"):
+                profile_fields["about"] = "" if modes.get("bio") == "remove" else payload.get("bio", "")
+            if profile_fields:
+                await client.invoke(raw.functions.account.UpdateProfile(**profile_fields))
+            if flags.get("username"):
+                username = "" if modes.get("username") == "remove" else payload.get("username", "")
+                await client.invoke(raw.functions.account.UpdateUsername(username=username))
+            if flags.get("profilePhoto"):
+                if modes.get("profilePhoto") == "remove":
+                    result["deletedPhotos"] = await delete_profile_photos(client)
+                else:
+                    result["photo"] = await upload_profile_photo(client, job["accountId"], payload.get("profilePhotoPath"))
+        elif job["action"] == "remove_photos":
+            result["deletedPhotos"] = await delete_profile_photos(client)
+        elif job["action"] == "set_photo":
+            result["photo"] = await upload_profile_photo(client, job["accountId"], payload.get("photoPath"))
+        elif job["action"] == "send_story":
+            status, result = await send_account_story(client, job["accountId"], payload)
+            await finish_account_settings_job(pool, job, status, result)
+            return
+        else:
+            raise ValueError(f"Unsupported account-settings action: {job['action']}")
+        await finish_account_settings_job(pool, job, "completed", result)
+    except Exception as error:
+        if isinstance(error, (FloodWait, PeerFlood, *SESSION_DEAD_ERRORS)):
+            with suppress(Exception):
+                await record_session_signal(pool, record, None, error, getattr(error, "value", 0))
+        await finish_account_settings_job(pool, job, "failed", error=error)
+        log.warning("Account settings job %s failed: %s", job["id"], error)
+    finally:
+        await disconnect(client)
+
+
 async def main():
     database_url = os.environ["DATABASE_URL"]
     pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10, command_timeout=60)
     log.info("Hydrogram worker started")
     ai_task = asyncio.create_task(ai_runtime(pool), name="ai-runtime")
     try:
+        await recover_account_settings_jobs(pool)
         interrupted = await pool.fetch('''UPDATE "TelegramCampaign" SET status = 'failed',
           "errorMessage" = 'Worker restarted while this campaign was running', "finishedAt" = NOW(),
           "replyTrackingStatus" = 'failed', "lastProgressAt" = NOW() WHERE status = 'running' RETURNING id''')
@@ -1946,6 +2478,10 @@ async def main():
             if session:
                 await validate_session(pool, session)
                 continue
+            profile_sync = await claim_profile_sync(pool)
+            if profile_sync:
+                await sync_profile(pool, profile_sync)
+                continue
             flow = await claim_flow(pool)
             if flow:
                 await process_flow(pool, flow)
@@ -1970,6 +2506,10 @@ async def main():
             if warmup:
                 await process_warmup(pool, warmup)
                 await asyncio.sleep(random_between(WARMUP_DELAY_MIN_SECONDS, WARMUP_DELAY_MAX_SECONDS))
+                continue
+            as_job = await claim_account_settings_job(pool)
+            if as_job:
+                await execute_account_settings_job(pool, as_job)
                 continue
             await pool.execute('''UPDATE "TelegramCampaign" SET "replyTrackingStatus" = 'completed'
               WHERE "replyTrackingStatus" = 'tracking' AND "replyTrackingUntil" <= NOW()''')

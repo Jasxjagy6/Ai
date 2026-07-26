@@ -11,6 +11,8 @@ export type ValidatorPlan = {
   creditsIncluded: number;
   validatorAccess: boolean;
   messagingAccess: boolean;
+  aiChatAccess: boolean;
+  aiCampaignLimit: number | null;
   sessionLimit: number | null;
   enabled: boolean;
   featured: boolean;
@@ -35,6 +37,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       creditsIncluded: 2500,
       validatorAccess: true,
       messagingAccess: true,
+      aiChatAccess: false,
+      aiCampaignLimit: 0,
       sessionLimit: 5,
       enabled: true,
       featured: false,
@@ -53,6 +57,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       creditsIncluded: 10000,
       validatorAccess: true,
       messagingAccess: true,
+      aiChatAccess: true,
+      aiCampaignLimit: 3,
       sessionLimit: 15,
       enabled: true,
       featured: true,
@@ -60,6 +66,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
         "10,000 workspace credits",
         "15 Telegram sessions",
         "Schedules, reports, and affiliates",
+        "AI Chatter with smart conversation AI",
+        "5 credits per AI message sent",
       ],
     },
     vip: {
@@ -71,6 +79,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       creditsIncluded: 30000,
       validatorAccess: true,
       messagingAccess: true,
+      aiChatAccess: true,
+      aiCampaignLimit: null,
       sessionLimit: 40,
       enabled: true,
       featured: false,
@@ -78,6 +88,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
         "30,000 workspace credits",
         "40 Telegram sessions",
         "Priority operating capacity",
+        "AI Chatter with smart conversation AI",
+        "5 credits per AI message sent",
       ],
     },
     enterprise: {
@@ -89,6 +101,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       creditsIncluded: 120000,
       validatorAccess: true,
       messagingAccess: true,
+      aiChatAccess: true,
+      aiCampaignLimit: null,
       sessionLimit: 150,
       enabled: true,
       featured: false,
@@ -96,6 +110,8 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
         "120,000 workspace credits",
         "150 Telegram sessions",
         "Enterprise-scale throughput",
+        "AI Chatter with smart conversation AI",
+        "5 credits per AI message sent",
       ],
     },
   };

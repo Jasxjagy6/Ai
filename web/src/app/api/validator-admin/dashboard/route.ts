@@ -24,6 +24,8 @@ const planSchema = z.object({
   creditsIncluded: z.number().int().min(0).max(1_000_000_000),
   validatorAccess: z.boolean(),
   messagingAccess: z.boolean(),
+  aiChatAccess: z.boolean(),
+  aiCampaignLimit: z.number().int().min(0).max(100_000).nullable(),
   sessionLimit: z.number().int().min(1).max(100_000).nullable(),
   enabled: z.boolean(),
   featured: z.boolean(),
@@ -218,21 +220,19 @@ export async function PATCH(request: Request) {
   const data = parsed.data;
   if (data.action === "save_plans") {
     for (const code of VALIDATOR_PLAN_CODES) {
-      if (data.plans[code].code !== code)
+      const plan = data.plans[code] as Record<string, unknown>;
+      if (plan.code !== code)
         return NextResponse.json(
           { error: `Invalid ${code} plan` },
           { status: 400 },
         );
-      if (
-        !data.plans[code].validatorAccess &&
-        !data.plans[code].messagingAccess
-      )
+      if (!plan.validatorAccess && !plan.messagingAccess)
         return NextResponse.json(
           { error: `${code} must enable a product` },
           { status: 400 },
         );
     }
-    await saveValidatorPlans(data.plans);
+    await saveValidatorPlans(data.plans as Parameters<typeof saveValidatorPlans>[0]);
   } else if (data.action === "save_credits") {
     const codes = new Set(data.settings.topups.map((pack) => pack.code));
     if (codes.size !== data.settings.topups.length)

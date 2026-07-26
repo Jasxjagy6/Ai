@@ -24,6 +24,7 @@ import type {
   ValidatorCreditSettings,
   ValidatorTaskCode,
 } from "@/lib/validator-credits";
+import { SignalSelect } from "@/components/validator/signal-select";
 
 type Account = {
   id: string;
@@ -90,7 +91,7 @@ type Dashboard = {
 
 const FIELD =
   "mt-1.5 w-full rounded-xl border border-white/10 bg-[#071111] px-3 py-2.5 text-sm text-white outline-none focus:border-[#b8ff4b]/50";
-const PANEL = "rounded-[24px] border border-white/[0.08] bg-[#0b1717]";
+const PANEL = "rounded-[24px] border border-white/[0.065] bg-[#111311]";
 const PLAN_CODES: ValidatorPlanCode[] = ["basic", "pro", "vip", "enterprise"];
 const TABS = [
   ["overview", "Overview", Gauge],
@@ -159,7 +160,7 @@ export function ValidatorAdmin({
   }
   if (!authenticated)
     return (
-      <main className="validator-grid flex min-h-dvh items-center justify-center bg-[#050b0a] p-5 text-white">
+      <main className="signal-desk-theme validator-grid flex min-h-dvh items-center justify-center bg-[#050b0a] p-5 text-white">
         <form
           onSubmit={async (event) => {
             event.preventDefault();
@@ -220,13 +221,13 @@ export function ValidatorAdmin({
     );
   if (!data)
     return (
-      <main className="flex min-h-dvh items-center justify-center bg-[#050b0a] text-[#b8ff4b]">
+      <main className="signal-desk-theme flex min-h-dvh items-center justify-center bg-[#050b0a] text-[#b8ff4b]">
         <Loader2 className="animate-spin" />
       </main>
     );
 
   return (
-    <div className="flex min-h-dvh bg-[#050b0a] text-[#eef7ed]">
+    <div className="signal-desk-theme flex min-h-dvh bg-[#050b0a] text-[#eef7ed]">
       <aside className="sticky top-0 hidden h-dvh w-64 shrink-0 flex-col border-r border-white/[0.07] bg-[#07100f] lg:flex">
         <div className="flex h-20 items-center gap-3 border-b border-white/[0.07] px-5">
           <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#b8ff4b]/10 text-[#b8ff4b]">
@@ -275,17 +276,14 @@ export function ValidatorAdmin({
                 {tab.replaceAll("_", " ")}
               </h1>
             </div>
-            <select
+            <SignalSelect
               value={tab}
-              onChange={(event) => setTab(event.target.value as typeof tab)}
-              className="rounded-xl border border-white/10 bg-[#0b1717] px-3 py-2 text-sm lg:hidden"
-            >
-              {TABS.map(([id, label]) => (
-                <option key={id} value={id}>
-                  {label}
-                </option>
-              ))}
-            </select>
+              onChange={(value) => setTab(value as typeof tab)}
+              placeholder="Admin section"
+              searchable={false}
+              className="lg:hidden"
+              options={TABS.map(([id, label]) => ({ value: id, label }))}
+            />
           </div>
           {message && (
             <p
@@ -482,6 +480,18 @@ function AdminContent({
                     }
                   />
                   <Field
+                    label="AI campaign limit"
+                    type="number"
+                    value={plan.aiCampaignLimit ?? ""}
+                    set={(value) =>
+                      updatePlan(
+                        code,
+                        "aiCampaignLimit",
+                        value === "" ? null : Number(value),
+                      )
+                    }
+                  />
+                  <Field
                     label="Tagline"
                     value={plan.tagline}
                     set={(value) => updatePlan(code, "tagline", value)}
@@ -530,6 +540,16 @@ function AdminContent({
                       }
                     />{" "}
                     Messaging
+                  </label>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={plan.aiChatAccess}
+                      onChange={(event) =>
+                        updatePlan(code, "aiChatAccess", event.target.checked)
+                      }
+                    />{" "}
+                    AI Chatter
                   </label>
                   <label>
                     <input
@@ -899,17 +919,14 @@ function AccountsAdmin({
           <Field label="Email" value={email} set={setEmail} />
           <label className="text-[10px] uppercase tracking-wider text-[#687670]">
             Plan
-            <select
+            <SignalSelect
               value={planCode}
-              onChange={(event) =>
-                setPlanCode(event.target.value as ValidatorPlanCode)
-              }
-              className={FIELD}
-            >
-              {PLAN_CODES.map((code) => (
-                <option key={code}>{code}</option>
-              ))}
-            </select>
+              onChange={(value) => setPlanCode(value as ValidatorPlanCode)}
+              placeholder="Plan"
+              searchable={false}
+              className="mt-1.5 capitalize"
+              options={PLAN_CODES.map((code) => ({ value: code, label: code }))}
+            />
           </label>
           <Field
             label="Included credits"

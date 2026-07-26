@@ -47,7 +47,7 @@ function Mark() {
 
 export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
   return (
-    <main className="validator-grid min-h-dvh overflow-hidden bg-[#050b0a] text-[#eef7ed]">
+    <main className="signal-desk-theme validator-grid min-h-dvh overflow-hidden bg-[#050b0a] text-[#eef7ed]">
       <div className="validator-orb validator-orb-one" />
       <div className="validator-orb validator-orb-two" />
       <div className="relative mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">

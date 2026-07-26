@@ -460,9 +460,16 @@ export async function createTelegramCampaign(
   );
 }
 
-export async function listTelegramCampaigns(accountId: string, limit = 50) {
+export async function listTelegramCampaigns(accountId: string, limit = 50, from?: string, to?: string) {
+  const where: Record<string, unknown> = { accountId };
+  if (from || to) {
+    const createdAt: Record<string, Date> = {};
+    if (from) createdAt.gte = new Date(from);
+    if (to) createdAt.lte = new Date(to);
+    where.createdAt = createdAt;
+  }
   const campaigns = await prisma.telegramCampaign.findMany({
-    where: { accountId },
+    where: where as Prisma.TelegramCampaignWhereInput,
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: Math.max(1, Math.min(100, limit)),
   });

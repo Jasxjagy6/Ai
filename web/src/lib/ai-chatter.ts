@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { capitalBotResponseLanguage } from "@/lib/ai-chatter-languages";
 
 export const AI_DEFAULT_CONFIG = {
   provider: "capitalbot",
@@ -10,7 +11,8 @@ export const AI_DEFAULT_CONFIG = {
     presetId: 88,
     platform: "Telegram",
     conversationSource: "Telegram",
-    detectLanguage: true,
+    detectLanguage: false,
+    language: "English",
   },
   cupidbot: {
     app: "telegram",
@@ -41,7 +43,12 @@ export function aiConfig(value: Prisma.JsonValue | null | undefined) {
     replyDelayMs: Math.max(0, Math.min(60_000, Number(input.replyDelayMs ?? 3000))),
     replyDelayJitterMs: Math.max(0, Math.min(60_000, Number(input.replyDelayJitterMs ?? 2000))),
     memoryMessageLimit: Math.max(10, Math.min(200, Number(input.memoryMessageLimit ?? 100))),
-    capitalbot: { ...AI_DEFAULT_CONFIG.capitalbot, ...capitalbot },
+    capitalbot: {
+      ...AI_DEFAULT_CONFIG.capitalbot,
+      ...capitalbot,
+      detectLanguage: false,
+      language: capitalBotResponseLanguage(capitalbot.language),
+    },
     cupidbot: { ...AI_DEFAULT_CONFIG.cupidbot, ...cupidbot },
   };
 }

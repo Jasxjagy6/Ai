@@ -1,157 +1,294 @@
+import { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
-import { aiConfig, aiCredentialView } from "@/lib/ai-chatter";
+import { validateAiProvider } from "@/lib/ai-chatter";
+import { CAPITALBOT_RESPONSE_LANGUAGES } from "@/lib/ai-chatter-languages";
+import {
+  AI_CAMPAIGN_ACTIVE_STATUSES,
+  aiCampaignConfig,
+  aiCampaignEndsAt,
+  aiCampaignSummary,
+} from "@/lib/ai-campaigns";
+import { encryptTelegramData } from "@/lib/telegram-crypto";
 import { requireMessagingAccount } from "@/lib/validator-auth";
 import { messagingUnauthorized } from "@/lib/validator-api";
 
-const updateSchema = z.object({
-  enabled: z.boolean().optional(),
-  reengageEnabled: z.boolean().optional(),
-  provider: z.enum(["capitalbot", "cupidbot"]).optional(),
-  replyDelayMs: z.number().int().min(0).max(60_000).optional(),
-  replyDelayJitterMs: z.number().int().min(0).max(60_000).optional(),
-  memoryMessageLimit: z.number().int().min(10).max(200).optional(),
+const createSchema = z.object({
+  name: z.string().trim().min(1).max(160),
+  provider: z.enum(["capitalbot", "cupidbot"]),
+  secret: z.string().trim().min(8).max(1000),
+  modelId: z.number().int().positive().nullable().optional(),
+  presetId: z.number().int().positive().nullable().optional(),
+  responseLanguage: z.enum(CAPITALBOT_RESPONSE_LANGUAGES).default("English"),
+  durationMode: z.enum(["day", "week", "until_stopped"]),
+  reengageEnabled: z.boolean().default(true),
+  replyDelayMs: z.number().int().min(0).max(60_000).default(3000),
+  replyDelayJitterMs: z.number().int().min(0).max(60_000).default(2000),
+  memoryMessageLimit: z.number().int().min(10).max(200).default(100),
+  sessionIds: z.array(z.string().min(1)).max(1000).default([]),
+  sessionListIds: z.array(z.string().min(1)).max(100).default([]),
 });
+
+function aiUnavailable() {
+  return NextResponse.json(
+    { error: "AI Chatter is not included in this plan", aiChatAccess: false },
+    { status: 403 },
+  );
+}
 
 export async function GET() {
   const account = await requireMessagingAccount();
   if (!account) return messagingUnauthorized();
-  const [setting, credentials, sessions, statusRows, jobRows, conversationCount, conversations, recentJobs] = await Promise.all([
-    prisma.aiAccountSetting.findUnique({ where: { accountId: account.id } }),
-    prisma.aiProviderCredential.findMany({ where: { accountId: account.id }, orderBy: { provider: "asc" } }),
+  if (!account.aiChatAccess) return aiUnavailable();
+
+  const [campaigns, sessions, sessionLists] = await Promise.all([
+    prisma.aiCampaign.findMany({
+      where: { accountId: account.id },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      include: {
+        sessions: {
+          orderBy: { position: "asc" },
+          include: {
+            session: {
+              select: {
+                label: true,
+                username: true,
+                phone: true,
+                status: true,
+                isLoggedIn: true,
+              },
+            },
+          },
+        },
+        _count: { select: { memories: true, jobs: true, responseLogs: true } },
+      },
+    }),
     prisma.telegramSession.findMany({
       where: { accountId: account.id },
       orderBy: [{ createdAt: "desc" }, { id: "desc" }],
       select: {
-        id: true, label: true, phone: true, username: true, firstName: true, lastName: true,
-        status: true, isLoggedIn: true, spamStatus: true, riskScore: true, lastActiveAt: true,
-        aiSetting: true,
+        id: true,
+        label: true,
+        phone: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        status: true,
+        isLoggedIn: true,
+        spamStatus: true,
+        riskScore: true,
+        lastActiveAt: true,
+        aiCampaignMemberships: {
+          where: { activeSessionId: { not: null } },
+          select: { campaignId: true, campaign: { select: { name: true } } },
+          take: 1,
+        },
       },
     }),
-    prisma.aiResponseLog.groupBy({
-      by: ["status"],
+    prisma.telegramSessionList.findMany({
       where: { accountId: account.id },
-      _count: { id: true },
-    }),
-    prisma.aiChatJob.groupBy({
-      by: ["status"],
-      where: { accountId: account.id },
-      _count: { id: true },
-    }),
-    prisma.aiChatMemory.count({ where: { accountId: account.id } }),
-    prisma.aiChatMemory.findMany({
-      where: { accountId: account.id },
-      orderBy: { updatedAt: "desc" },
-      take: 100,
-      include: {
-        session: { select: { label: true, username: true, phone: true } },
-      },
-    }),
-    prisma.aiChatJob.findMany({
-      where: { accountId: account.id },
-      orderBy: { createdAt: "desc" },
-      take: 20,
+      orderBy: { name: "asc" },
       select: {
-        id: true, sessionId: true, peerId: true, status: true, attempts: true, isFollowUp: true,
-        errorCode: true, errorMessage: true, runAfter: true, createdAt: true, finishedAt: true,
+        id: true,
+        name: true,
+        members: { select: { sessionId: true }, orderBy: { position: "asc" } },
       },
     }),
   ]);
-  const statusBreakdown = Object.fromEntries(statusRows.map((row) => [row.status, row._count.id]));
-  const queueBreakdown = Object.fromEntries(jobRows.map((row) => [row.status, row._count.id]));
-  const sent = statusBreakdown.sent || 0;
-  const failed = statusBreakdown.failed || 0;
-  const completed = Object.values(statusBreakdown).reduce((sum, count) => sum + count, 0);
+
   return NextResponse.json({
-    setting: {
-      enabled: setting?.enabled || false,
-      reengageEnabled: setting?.reengageEnabled ?? true,
-      config: aiConfig(setting?.config),
-    },
-    providers: credentials.map(aiCredentialView),
+    creditsBalance: account.creditsBalance,
+    campaignLimit: account.aiCampaignLimit,
+    activeCampaigns: campaigns.filter((campaign) =>
+      AI_CAMPAIGN_ACTIVE_STATUSES.includes(
+        campaign.status as (typeof AI_CAMPAIGN_ACTIVE_STATUSES)[number],
+      ),
+    ).length,
+    campaigns: campaigns.map(aiCampaignSummary),
     sessions: sessions.map((session) => ({
       ...session,
-      aiSetting: session.aiSetting ? {
-        enabled: session.aiSetting.enabled,
-        config: session.aiSetting.config,
-        runtimeStatus: session.aiSetting.runtimeStatus,
-        lastConnectedAt: session.aiSetting.lastConnectedAt,
-        lastHeartbeatAt: session.aiSetting.lastHeartbeatAt,
-        lastError: session.aiSetting.lastError,
-      } : null,
+      assignedCampaign: session.aiCampaignMemberships[0]
+        ? {
+            id: session.aiCampaignMemberships[0].campaignId,
+            name: session.aiCampaignMemberships[0].campaign.name,
+          }
+        : null,
+      aiCampaignMemberships: undefined,
     })),
-    overview: {
-      conversations: conversationCount,
-      completed,
-      sent,
-      failed,
-      successRate: sent + failed ? Math.round((sent / (sent + failed)) * 100) : 0,
-      statusBreakdown,
-      queueBreakdown,
-    },
-    conversations: conversations.map((memory) => {
-      const recipient = memory.recipient && typeof memory.recipient === "object" && !Array.isArray(memory.recipient)
-        ? memory.recipient as Record<string, unknown>
-        : {};
-      const messages = Array.isArray(memory.messages) ? memory.messages : [];
-      return {
-        id: memory.id,
-        sessionId: memory.sessionId,
-        peerId: memory.peerId.toString(),
-        recipientName: String(recipient.name || ""),
-        recipientUsername: String(recipient.username || ""),
-        messageCount: messages.length,
-        conversationState: memory.conversationState,
-        lastCategory: memory.lastCategory,
-        lastIncomingAt: memory.lastIncomingAt,
-        lastOutgoingAt: memory.lastOutgoingAt,
-        updatedAt: memory.updatedAt,
-        session: memory.session,
-      };
-    }),
-    recentJobs: recentJobs.map((job) => ({ ...job, peerId: job.peerId.toString() })),
+    sessionLists: sessionLists.map((list) => ({
+      id: list.id,
+      name: list.name,
+      sessionIds: list.members.map((member) => member.sessionId),
+    })),
   });
 }
 
-export async function PATCH(request: Request) {
+export async function POST(request: Request) {
   const account = await requireMessagingAccount();
   if (!account) return messagingUnauthorized();
-  const parsed = updateSchema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "Enter valid AI Chatter settings" }, { status: 400 });
-  const current = await prisma.aiAccountSetting.findUnique({ where: { accountId: account.id } });
-  const config = aiConfig(current?.config);
-  const nextConfig = aiConfig({ ...config, ...parsed.data });
-  const nextEnabled = parsed.data.enabled ?? current?.enabled ?? false;
-  if (nextEnabled) {
-    const credential = await prisma.aiProviderCredential.findUnique({
-      where: { accountId_provider: { accountId: account.id, provider: nextConfig.provider } },
+  if (!account.aiChatAccess || account.aiCampaignLimit === 0) return aiUnavailable();
+  const parsed = createSchema.safeParse(await request.json().catch(() => null));
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: parsed.error.issues[0]?.message || "Enter valid campaign settings" },
+      { status: 400 },
+    );
+  }
+
+  const providerCheck = await validateAiProvider(
+    parsed.data.provider,
+    parsed.data.secret,
+  ).catch((error) => ({
+    valid: false,
+    catalog: null,
+    error: error instanceof Error ? error.message : "Provider validation failed",
+  }));
+  if (!providerCheck.valid) {
+    return NextResponse.json(
+      { error: providerCheck.error || "Provider rejected this credential" },
+      { status: 422 },
+    );
+  }
+
+  const catalog = providerCheck.catalog as {
+    models?: Array<Record<string, unknown>>;
+    presets?: Array<Record<string, unknown>>;
+  } | null;
+  const firstModel = catalog?.models?.[0];
+  const firstPreset = catalog?.presets?.[0];
+  const modelId =
+    parsed.data.modelId ??
+    (Number(firstModel?.modelId || firstModel?.id || 0) || null);
+  const presetId =
+    parsed.data.presetId ??
+    (Number(firstPreset?.id || firstPreset?.presetId || 0) || null);
+
+  try {
+    const campaign = await prisma.$transaction(async (transaction) => {
+      await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${account.id}))`;
+      const activeCount = await transaction.aiCampaign.count({
+        where: {
+          accountId: account.id,
+          status: { in: [...AI_CAMPAIGN_ACTIVE_STATUSES] },
+        },
+      });
+      if (
+        account.aiCampaignLimit !== null &&
+        activeCount >= account.aiCampaignLimit
+      ) {
+        throw new Error(`AI campaign limit of ${account.aiCampaignLimit} reached`);
+      }
+
+      const listMembers = parsed.data.sessionListIds.length
+        ? await transaction.telegramSessionListMember.findMany({
+            where: {
+              listId: { in: parsed.data.sessionListIds },
+              list: { accountId: account.id },
+            },
+            select: { sessionId: true },
+          })
+        : [];
+      const sessionIds = [
+        ...new Set([
+          ...parsed.data.sessionIds,
+          ...listMembers.map((member) => member.sessionId),
+        ]),
+      ];
+      if (!sessionIds.length) throw new Error("Select at least one Telegram session");
+      const sessions = await transaction.telegramSession.findMany({
+        where: { id: { in: sessionIds }, accountId: account.id },
+        select: {
+          id: true,
+          label: true,
+          status: true,
+          isLoggedIn: true,
+          spamStatus: true,
+        },
+      });
+      if (sessions.length !== sessionIds.length) {
+        throw new Error("One or more Telegram sessions were not found");
+      }
+      const unavailable = sessions.find(
+        (session) =>
+          session.status !== "active" ||
+          !session.isLoggedIn ||
+          session.spamStatus === "frozen",
+      );
+      if (unavailable) {
+        throw new Error(
+          `${unavailable.label} must be active, logged in, and non-frozen`,
+        );
+      }
+      const leased = await transaction.aiCampaignSession.findFirst({
+        where: { activeSessionId: { in: sessionIds } },
+        include: { campaign: { select: { name: true } }, session: { select: { label: true } } },
+      });
+      if (leased) {
+        throw new Error(
+          `${leased.session.label} is already assigned to ${leased.campaign.name}`,
+        );
+      }
+
+      const now = new Date();
+      return transaction.aiCampaign.create({
+        data: {
+          accountId: account.id,
+          name: parsed.data.name,
+          provider: parsed.data.provider,
+          secretEncrypted: encryptTelegramData(parsed.data.secret),
+          modelId,
+          presetId,
+          catalog: (providerCheck.catalog || undefined) as Prisma.InputJsonValue | undefined,
+          config: aiCampaignConfig(parsed.data),
+          reengageEnabled: parsed.data.reengageEnabled,
+          durationMode: parsed.data.durationMode,
+          status: "starting",
+          startedAt: now,
+          endsAt: aiCampaignEndsAt(parsed.data.durationMode, now),
+          sessions: {
+            create: sessionIds.map((sessionId, position) => ({
+              sessionId,
+              activeSessionId: sessionId,
+              position,
+              runtimeStatus: "starting",
+              catchupRequested: true,
+            })),
+          },
+        },
+        include: {
+          sessions: {
+            orderBy: { position: "asc" },
+            include: {
+              session: {
+                select: {
+                  label: true,
+                  username: true,
+                  phone: true,
+                  status: true,
+                  isLoggedIn: true,
+                },
+              },
+            },
+          },
+          _count: { select: { memories: true, jobs: true, responseLogs: true } },
+        },
+      });
     });
-    if (!credential?.isValid) {
-      return NextResponse.json({ error: `Add and validate a ${nextConfig.provider === "capitalbot" ? "CapitalBot" : "CupidBot"} credential first` }, { status: 409 });
+    return NextResponse.json({ campaign: aiCampaignSummary(campaign) }, { status: 201 });
+  } catch (error) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      return NextResponse.json(
+        { error: "A selected Telegram session was assigned to another campaign" },
+        { status: 409 },
+      );
     }
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : "Campaign creation failed" },
+      { status: 409 },
+    );
   }
-  const setting = await prisma.aiAccountSetting.upsert({
-    where: { accountId: account.id },
-    create: {
-      accountId: account.id,
-      enabled: parsed.data.enabled ?? false,
-      reengageEnabled: parsed.data.reengageEnabled ?? true,
-      config: nextConfig,
-    },
-    update: {
-      ...(parsed.data.enabled !== undefined ? { enabled: parsed.data.enabled } : {}),
-      ...(parsed.data.reengageEnabled !== undefined ? { reengageEnabled: parsed.data.reengageEnabled } : {}),
-      config: nextConfig,
-    },
-  });
-  if (parsed.data.enabled === false) {
-    await prisma.aiSessionSetting.updateMany({
-      where: { accountId: account.id },
-      data: { runtimeStatus: "stopping" },
-    });
-  }
-  return NextResponse.json({
-    setting: { enabled: setting.enabled, reengageEnabled: setting.reengageEnabled, config: aiConfig(setting.config) },
-  });
 }

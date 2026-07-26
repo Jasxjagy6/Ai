@@ -10,7 +10,7 @@
   --text: #171717;
   --text-secondary: #737373;
   --accent: #6366f1;
-  --accent-soft: #eef2ff;
+  --accent-soft: #eef7ed;
   --accent-strong: #4f46e5;
   --accent-warm: #ec4899;
   --accent-warm-soft: #fdf2f8;
@@ -198,10 +198,64 @@ h1, h2, h3 {
 
 .validator-grid {
   background-image:
-    linear-gradient(rgba(184,255,75,.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(184,255,75,.035) 1px, transparent 1px);
+    linear-gradient(rgba(156,255,56,.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(156,255,56,.03) 1px, transparent 1px);
   background-size: 42px 42px;
 }
+
+/* Signal Desk workspace palette. The dashboard neutral-black and lime system is
+   applied to every legacy panel colour so the whole product stays consistent. */
+.signal-desk-theme {
+  --sd-page: #0b0d0c;
+  --sd-surface: #111311;
+  --sd-surface-deep: #0b0d0c;
+  --sd-line: rgba(255, 255, 255, 0.065);
+  --sd-accent: #9cff38;
+  --sd-accent-soft: rgba(156, 255, 56, 0.07);
+  --sd-text: #f3f6f2;
+  --sd-muted: #737d78;
+}
+
+.signal-desk-theme [class*="bg-[#050b0a]"],
+.signal-desk-theme [class*="bg-[#020303]"],
+.signal-desk-theme [class*="bg-[#070f0e]"],
+.signal-desk-theme [class*="bg-[#07100d]"] { background-color: var(--sd-page) !important; }
+
+.signal-desk-theme [class*="bg-[#0b1717]"] { background-color: var(--sd-surface) !important; }
+.signal-desk-theme [class*="bg-[#071111]"] { background-color: var(--sd-surface-deep) !important; }
+
+.signal-desk-theme [class*="bg-[#b8ff4b]"]:not([class*="bg-[#b8ff4b]/"]) { background-color: var(--sd-accent) !important; }
+.signal-desk-theme [class*="bg-[#b8ff4b]/"],
+.signal-desk-theme [class*="bg-[#65e6ff]/"],
+.signal-desk-theme [class*="bg-[#40d6c2]/"],
+.signal-desk-theme [class*="bg-[#d8b7ff]/"] { background-color: var(--sd-accent-soft) !important; }
+
+.signal-desk-theme [class*="text-[#b8ff4b]"],
+.signal-desk-theme [class*="text-[#dfffaa]"],
+.signal-desk-theme [class*="text-[#e7ffc4]"],
+.signal-desk-theme [class*="text-[#65e6ff]"],
+.signal-desk-theme [class*="text-[#a8f1ff]"],
+.signal-desk-theme [class*="text-[#6cebd9]"],
+.signal-desk-theme [class*="text-[#d8b7ff]"],
+.signal-desk-theme [class*="text-[#91ad72]"],
+.signal-desk-theme [class*="text-[#84eaff]"] { color: var(--sd-accent) !important; }
+
+.signal-desk-theme [class*="text-[#eef7ed]"],
+.signal-desk-theme [class*="text-[#e5eeeb]"],
+.signal-desk-theme [class*="text-[#e3ece8]"],
+.signal-desk-theme [class*="text-[#dce7e3]"] { color: var(--sd-text) !important; }
+
+.signal-desk-theme [class*="border-[#b8ff4b]"],
+.signal-desk-theme [class*="border-[#65e6ff]"],
+.signal-desk-theme [class*="border-[#40d6c2]"],
+.signal-desk-theme [class*="border-[#d8b7ff]"] { border-color: rgba(156, 255, 56, 0.2) !important; }
+
+.signal-desk-theme [class*="shadow-[0_0_10px_#b8ff4b]"],
+.signal-desk-theme [class*="shadow-[0_0_8px_#b8ff4b]"],
+.signal-desk-theme [class*="shadow-[0_0_12px_#b8ff4b]"] { box-shadow: 0 0 10px rgba(156, 255, 56, 0.45) !important; }
+
+.signal-desk-theme .validator-orb-one { background: rgba(156, 255, 56, 0.05) !important; }
+.signal-desk-theme .validator-orb-two { background: rgba(156, 255, 56, 0.035) !important; }
 
 .validator-reveal { animation: validator-reveal .55s cubic-bezier(.2,.75,.25,1) both; }
 .validator-card-in { animation: validator-card-in .55s cubic-bezier(.2,.75,.25,1) both; transform-origin: center bottom; }

@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { getValidatorPlans, type ValidatorPlanCode } from "@/lib/validator-plans";
 
 async function isSecure() {
   const h = await headers();
@@ -55,10 +56,11 @@ type AccountRecord = {
   referralCode: string | null;
 };
 
-function accountView(
+async function accountView(
   account: AccountRecord,
   key: {
     id: string;
+    prefix: string;
     requestLimit: number | null;
     requestsUsed: number;
     planCode: string | null;
@@ -70,6 +72,9 @@ function accountView(
     messagesUsed: number;
   } | null,
 ) {
+  const plans = await getValidatorPlans();
+  const planCode = (account.currentPlanCode || key?.planCode || null) as ValidatorPlanCode | null;
+  const plan = planCode ? plans[planCode] : null;
   const expiresAt = account.planExpiresAt || key?.expiresAt || null;
   const expired = !!expiresAt && expiresAt <= new Date();
   const reactivated =
@@ -79,7 +84,8 @@ function accountView(
     id: account.id,
     email: account.email,
     accessKeyId: key?.id || null,
-    planCode: account.currentPlanCode || key?.planCode || null,
+    accessKeyPrefix: key?.prefix || null,
+    planCode,
     requestLimit: key?.requestLimit ?? null,
     requestsUsed: key?.requestsUsed || 0,
     requestsRemaining:
@@ -95,6 +101,8 @@ function accountView(
     referralCode: account.referralCode,
     validatorAccess: key?.validatorAccess ?? true,
     messagingAccess: key?.messagingAccess ?? true,
+    aiChatAccess: plan?.aiChatAccess ?? false,
+    aiCampaignLimit: plan ? plan.aiCampaignLimit : 0,
     sessionLimit: key?.sessionLimit ?? null,
     messageLimit: key?.messageLimit ?? null,
     messagesUsed: key?.messagesUsed || 0,

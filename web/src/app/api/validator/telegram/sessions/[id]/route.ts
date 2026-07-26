@@ -17,13 +17,16 @@ const updateSchema = z.object({
   warmupEnabled: z.boolean().optional(),
   warmupMode: z.enum(["off", "safe", "standard"]).optional(),
 });
-const actionSchema = z.object({ action: z.enum(["spam_check", "warmup"]) });
+const actionSchema = z.object({
+  action: z.enum(["spam_check", "warmup", "login", "logout", "profile_sync"]),
+});
 
 export async function GET(_request: Request, { params }: Context) {
   const account = await requireMessagingAccount();
   if (!account) return messagingUnauthorized();
   const session = await prisma.telegramSession.findFirst({
     where: { id: (await params).id, accountId: account.id },
+    omit: { sessionDataEncrypted: true, proxyEncrypted: true, avatarData: true },
   });
   return session
     ? NextResponse.json({ session: sessionView(session) })
@@ -61,6 +64,7 @@ export async function PATCH(request: Request, { params }: Context) {
         ? { proxyEncrypted: proxyUrl ? encryptTelegramData(proxyUrl) : null }
         : {}),
     },
+    omit: { sessionDataEncrypted: true, proxyEncrypted: true, avatarData: true },
   });
   return NextResponse.json({ session: sessionView(session) });
 }
@@ -75,6 +79,42 @@ export async function POST(request: Request, { params }: Context) {
       { status: 400 },
     );
   const id = (await params).id;
+  if (["login", "logout", "profile_sync"].includes(parsed.data.action)) {
+    const session = await prisma.telegramSession.findFirst({
+      where: { id, accountId: account.id },
+      omit: { sessionDataEncrypted: true, proxyEncrypted: true, avatarData: true },
+    });
+    if (!session)
+      return NextResponse.json(
+        { error: "Telegram session not found" },
+        { status: 404 },
+      );
+    if (parsed.data.action === "login" && session.isLoggedIn)
+      return NextResponse.json({ session: sessionView(session) });
+    if (parsed.data.action === "logout" && !session.isLoggedIn)
+      return NextResponse.json({ session: sessionView(session) });
+    const updated = await prisma.telegramSession.update({
+      where: { id },
+      data:
+        parsed.data.action === "login"
+          ? {
+              status: "queued_validation",
+              isLoggedIn: false,
+              lastErrorCode: null,
+              lastErrorMessage: null,
+              profileSyncRequested: true,
+              profileSyncClaimedAt: null,
+            }
+          : parsed.data.action === "logout"
+            ? { status: "inactive", isLoggedIn: false }
+            : { profileSyncRequested: true, profileSyncClaimedAt: null },
+      omit: { sessionDataEncrypted: true, proxyEncrypted: true, avatarData: true },
+    });
+    return NextResponse.json(
+      { session: sessionView(updated) },
+      { status: 202 },
+    );
+  }
   const exists = await prisma.telegramSession.findFirst({
     where: { id, accountId: account.id, status: "active", isLoggedIn: true },
     select: { id: true },

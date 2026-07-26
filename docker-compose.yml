@@ -91,6 +91,10 @@ services:
       AI_CATCHUP_DIALOG_LIMIT: ${AI_CATCHUP_DIALOG_LIMIT:-200}
       CAPITALBOT_ENDPOINT_URL: ${CAPITALBOT_ENDPOINT_URL:-https://api.capitalbot.ai/generateResponse}
       CUPIDBOT_ENDPOINT_URL: ${CUPIDBOT_ENDPOINT_URL:-https://chat-api.cupidbotofm.ai/api/generateChatResponse}
+      ACCOUNT_SETTINGS_MEDIA_ROOT: /app/uploads/account-settings
+    volumes:
+      - ./web/uploads:/app/uploads:ro
+      - ./web/public/account-settings/avatars:/app/account-settings-avatars:ro
     depends_on:
       postgres:
         condition: service_healthy

@@ -17,6 +17,7 @@ export const VALIDATOR_TASK_CODES = [
   "session_warmup",
   "campaign_send",
   "schedule_create",
+  "ai_chat_send",
 ] as const;
 
 export type ValidatorTaskCode = (typeof VALIDATOR_TASK_CODES)[number];
@@ -149,6 +150,14 @@ export const DEFAULT_CREDIT_SETTINGS: ValidatorCreditSettings = {
       itemCost: 1,
       itemUnit: 10,
       sessionCost: 1,
+      enabled: true,
+    },
+    ai_chat_send: {
+      label: "AI message sent",
+      baseCost: 5,
+      itemCost: 0,
+      itemUnit: 1,
+      sessionCost: 0,
       enabled: true,
     },
   },

@@ -179,7 +179,7 @@ export function ValidatorPurchase({
     const failed =
       purchase && ["expired", "refunded", "failed"].includes(purchase.status);
     return (
-      <main className="validator-grid relative min-h-dvh overflow-hidden bg-[#050b0a] px-4 py-10 text-[#eef7ed] sm:px-6">
+      <main className="signal-desk-theme validator-grid relative min-h-dvh overflow-hidden bg-[#050b0a] px-4 py-10 text-[#eef7ed] sm:px-6">
         <div className="validator-orb validator-orb-one" />
         <div className="validator-orb validator-orb-two" />
         <div className="relative mx-auto max-w-2xl validator-reveal">
@@ -288,7 +288,7 @@ export function ValidatorPurchase({
 
   const current = plans.find((plan) => plan.code === selected);
   return (
-    <main className="validator-grid relative min-h-dvh overflow-hidden bg-[#050b0a] text-[#eef7ed]">
+    <main className="signal-desk-theme validator-grid relative min-h-dvh overflow-hidden bg-[#050b0a] text-[#eef7ed]">
       <div className="validator-orb validator-orb-one" />
       <div className="validator-orb validator-orb-two" />
       <div className="relative mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8">

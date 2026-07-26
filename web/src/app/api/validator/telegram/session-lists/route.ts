@@ -25,7 +25,7 @@ export async function POST(request: Request) {
   const account = await requireMessagingAccount();
   if (!account) return messagingUnauthorized();
   const parsed = schema.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Enter valid fleet settings" }, { status: 400 });
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || "Enter valid Session List settings" }, { status: 400 });
   const sessionIds = [...new Set(parsed.data.sessionIds)];
   const count = await prisma.telegramSession.count({ where: { id: { in: sessionIds }, accountId: account.id } });
   if (count !== sessionIds.length) return NextResponse.json({ error: "One or more Telegram sessions were not found" }, { status: 400 });
@@ -38,5 +38,5 @@ export async function POST(request: Request) {
     },
     include: { members: { orderBy: { position: "asc" }, include: { session: { select: { id: true, label: true, username: true, phone: true, status: true, isLoggedIn: true } } } } },
   }).catch(() => null);
-  return list ? NextResponse.json({ list }, { status: 201 }) : NextResponse.json({ error: "A fleet with this name already exists" }, { status: 409 });
+  return list ? NextResponse.json({ list }, { status: 201 }) : NextResponse.json({ error: "A Session List with this name already exists" }, { status: 409 });
 }
