@@ -284,9 +284,11 @@ export async function PATCH(request: Request) {
           prefix,
           expiresAt,
           planCode: data.planCode,
-          validatorAccess: data.validatorAccess,
-          messagingAccess: data.messagingAccess,
-          sessionLimit: data.sessionLimit,
+          validatorAccess: true,
+          messagingAccess: true,
+          requestLimit: null,
+          sessionLimit: null,
+          messageLimit: null,
         },
       });
       if (data.credits) {

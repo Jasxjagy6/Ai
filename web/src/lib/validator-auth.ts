@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "crypto";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
-import { getValidatorPlans, type ValidatorPlanCode } from "@/lib/validator-plans";
 
 async function isSecure() {
   const h = await headers();
@@ -72,9 +71,7 @@ async function accountView(
     messagesUsed: number;
   } | null,
 ) {
-  const plans = await getValidatorPlans();
-  const planCode = (account.currentPlanCode || key?.planCode || null) as ValidatorPlanCode | null;
-  const plan = planCode ? plans[planCode] : null;
+  const planCode = account.currentPlanCode || key?.planCode || null;
   const expiresAt = account.planExpiresAt || key?.expiresAt || null;
   const expired = !!expiresAt && expiresAt <= new Date();
   const reactivated =
@@ -86,12 +83,9 @@ async function accountView(
     accessKeyId: key?.id || null,
     accessKeyPrefix: key?.prefix || null,
     planCode,
-    requestLimit: key?.requestLimit ?? null,
+    requestLimit: null,
     requestsUsed: key?.requestsUsed || 0,
-    requestsRemaining:
-      key?.requestLimit == null
-        ? null
-        : Math.max(0, key.requestLimit - key.requestsUsed),
+    requestsRemaining: null,
     accessExpiresAt: expiresAt,
     accessExpired: expired,
     creditsActive: account.creditsBalance > 0 && (!expired || reactivated),
@@ -99,17 +93,14 @@ async function accountView(
     creditsPurchased: account.creditsPurchased,
     creditsSpent: account.creditsSpent,
     referralCode: account.referralCode,
-    validatorAccess: key?.validatorAccess ?? true,
-    messagingAccess: key?.messagingAccess ?? true,
-    aiChatAccess: plan?.aiChatAccess ?? false,
-    aiCampaignLimit: plan ? plan.aiCampaignLimit : 0,
-    sessionLimit: key?.sessionLimit ?? null,
-    messageLimit: key?.messageLimit ?? null,
+    validatorAccess: true,
+    messagingAccess: true,
+    aiChatAccess: true,
+    aiCampaignLimit: null,
+    sessionLimit: null,
+    messageLimit: null,
     messagesUsed: key?.messagesUsed || 0,
-    messagesRemaining:
-      key?.messageLimit == null
-        ? null
-        : Math.max(0, key.messageLimit - key.messagesUsed),
+    messagesRemaining: null,
   };
 }
 
@@ -123,7 +114,15 @@ export async function createValidatorSessionForAccount(
   if (!account || !account.active) return null;
   await ensureValidatorReferralCode(account.id);
   const token = randomBytes(32).toString("base64url");
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000);
+  const key = accessKeyId
+    ? await prisma.validatorAccessKey.findUnique({ where: { id: accessKeyId } })
+    : null;
+  if (key?.expiresAt && key.expiresAt <= new Date()) return null;
+  const normalExpiry = new Date(
+    Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000,
+  );
+  const expiresAt =
+    key?.expiresAt && key.expiresAt < normalExpiry ? key.expiresAt : normalExpiry;
   await prisma.validatorSession.create({
     data: { accountId, accessKeyId, tokenHash: hash(token), expiresAt },
   });
@@ -135,12 +134,9 @@ export async function createValidatorSessionForAccount(
     path: "/",
     expires: expiresAt,
   });
-  const [freshAccount, key] = await Promise.all([
-    prisma.validatorAccount.findUniqueOrThrow({ where: { id: accountId } }),
-    accessKeyId
-      ? prisma.validatorAccessKey.findUnique({ where: { id: accessKeyId } })
-      : null,
-  ]);
+  const freshAccount = await prisma.validatorAccount.findUniqueOrThrow({
+    where: { id: accountId },
+  });
   return accountView(freshAccount, key);
 }
 
@@ -150,7 +146,13 @@ export async function createValidatorSession(rawKey: string) {
     where: { keyHash: hash(rawKey.trim()) },
     include: { account: true },
   });
-  if (!key || key.revoked || !key.account.active) return null;
+  if (
+    !key ||
+    key.revoked ||
+    !key.account.active ||
+    (key.expiresAt && key.expiresAt <= now)
+  )
+    return null;
   await prisma.validatorAccessKey.update({
     where: { id: key.id },
     data: { lastUsedAt: now },
@@ -167,7 +169,10 @@ export async function requireSignalDeskAccount() {
   });
   if (!session || session.expiresAt <= new Date() || !session.account.active)
     return null;
-  if (session.accessKey?.revoked) {
+  if (
+    session.accessKey?.revoked ||
+    (session.accessKey?.expiresAt && session.accessKey.expiresAt <= new Date())
+  ) {
     await prisma.validatorSession
       .delete({ where: { id: session.id } })
       .catch(() => undefined);

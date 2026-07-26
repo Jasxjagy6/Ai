@@ -410,34 +410,22 @@ export async function createTelegramCampaign(
         Array<{
           accountId: string;
           revoked: boolean;
-          messagingAccess: boolean;
           expiresAt: Date | null;
-          messageLimit: number | null;
           messagesUsed: number;
         }>
-      >(Prisma.sql`SELECT "accountId", revoked, "messagingAccess", "expiresAt",
-          "messageLimit", "messagesUsed" FROM "ValidatorAccessKey"
+      >(Prisma.sql`SELECT "accountId", revoked, "expiresAt", "messagesUsed"
+          FROM "ValidatorAccessKey"
           WHERE id = ${account.accessKeyId!} FOR UPDATE`);
       if (
         !accessKey ||
         accessKey.accountId !== account.id ||
         accessKey.revoked ||
-        !accessKey.messagingAccess ||
         (accessKey.expiresAt && accessKey.expiresAt <= new Date())
       )
         throw new TelegramControlError(
           "Messaging access is no longer active",
           403,
           "MESSAGING_ACCESS_REQUIRED",
-        );
-      if (
-        accessKey.messageLimit != null &&
-        accessKey.messagesUsed + transmissions.length > accessKey.messageLimit
-      )
-        throw new TelegramControlError(
-          "This campaign exceeds the active access key's remaining message allowance",
-          429,
-          "TELEGRAM_MESSAGE_LIMIT_EXCEEDED",
         );
       await transaction.validatorAccessKey.update({
         where: { id: account.accessKeyId! },

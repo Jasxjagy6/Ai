@@ -100,5 +100,26 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  validator-trial-bot:
+    build:
+      context: ./validator-trial-bot
+      dockerfile: Dockerfile
+    network_mode: host
+    env_file:
+      - ./web/.env
+    environment:
+      VALIDATOR_TRIAL_API_BASE: http://localhost:3100
+      VALIDATOR_PUBLIC_URL: ${VALIDATOR_PUBLIC_URL:-https://play-casino.me}
+      VALIDATOR_TRIAL_BOT_STATE: /app/data/dashboard-messages.json
+    volumes:
+      - validator_trial_bot_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      validator-web:
+        condition: service_started
+    restart: unless-stopped
+
 volumes:
   pgdata:
+  validator_trial_bot_data:

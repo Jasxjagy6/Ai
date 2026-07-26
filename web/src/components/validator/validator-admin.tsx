@@ -468,30 +468,6 @@ function AdminContent({
                     }
                   />
                   <Field
-                    label="Session limit"
-                    type="number"
-                    value={plan.sessionLimit ?? ""}
-                    set={(value) =>
-                      updatePlan(
-                        code,
-                        "sessionLimit",
-                        value ? Number(value) : null,
-                      )
-                    }
-                  />
-                  <Field
-                    label="AI campaign limit"
-                    type="number"
-                    value={plan.aiCampaignLimit ?? ""}
-                    set={(value) =>
-                      updatePlan(
-                        code,
-                        "aiCampaignLimit",
-                        value === "" ? null : Number(value),
-                      )
-                    }
-                  />
-                  <Field
                     label="Tagline"
                     value={plan.tagline}
                     set={(value) => updatePlan(code, "tagline", value)}
@@ -512,45 +488,10 @@ function AdminContent({
                     className={FIELD}
                   />
                 </label>
-                <div className="mt-3 flex gap-4 text-xs text-[#7c8a85]">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={plan.validatorAccess}
-                      onChange={(event) =>
-                        updatePlan(
-                          code,
-                          "validatorAccess",
-                          event.target.checked,
-                        )
-                      }
-                    />{" "}
-                    Validator
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={plan.messagingAccess}
-                      onChange={(event) =>
-                        updatePlan(
-                          code,
-                          "messagingAccess",
-                          event.target.checked,
-                        )
-                      }
-                    />{" "}
-                    Messaging
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={plan.aiChatAccess}
-                      onChange={(event) =>
-                        updatePlan(code, "aiChatAccess", event.target.checked)
-                      }
-                    />{" "}
-                    AI Chatter
-                  </label>
+                <div className="mt-3 flex items-center gap-4 text-xs text-[#7c8a85]">
+                  <span className="rounded-lg border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.06] px-3 py-2 text-[#b8ff4b]">
+                    All features · unlimited fleet · credit-based usage
+                  </span>
                   <label>
                     <input
                       type="checkbox"
@@ -954,14 +895,7 @@ function AccountsAdmin({
                 credits,
                 validatorAccess: true,
                 messagingAccess: true,
-                sessionLimit:
-                  planCode === "enterprise"
-                    ? 150
-                    : planCode === "vip"
-                      ? 40
-                      : planCode === "pro"
-                        ? 15
-                        : 5,
+                sessionLimit: null,
               },
               "Access key created and copied.",
             )

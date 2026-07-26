@@ -477,7 +477,7 @@ async def claim_flow(pool):
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow('''
             SELECT f.*, c."apiId", c."apiHashEncrypted", k.revoked,
-              k."expiresAt" AS "keyExpiresAt", k."messagingAccess"
+              k."expiresAt" AS "keyExpiresAt"
             FROM "TelegramLoginFlow" f
             JOIN "TelegramApiCredential" c ON c.id = f."credentialId"
             LEFT JOIN "ValidatorAccessKey" k ON k.id = f."accessKeyId"
@@ -499,10 +499,6 @@ async def finish_login(pool, record, client, me):
     encrypted = encrypt(session_string)
     session_id = f"tgs_{uuid.uuid4().hex}"
     async with pool.acquire() as connection, connection.transaction():
-        count = await connection.fetchval('SELECT COUNT(*) FROM "TelegramSession" WHERE "accountId" = $1', record["accountId"])
-        limit = await connection.fetchval('SELECT "sessionLimit" FROM "ValidatorAccessKey" WHERE id = $1', record["accessKeyId"])
-        if limit is not None and count >= limit:
-            raise ValueError(f"Session limit of {limit} reached")
         await connection.execute('''
             INSERT INTO "TelegramSession" (id, "accountId", "credentialId", label, phone, username,
               "firstName", "lastName", "telegramUserId", "sessionDataEncrypted", "sessionFingerprint",
@@ -527,7 +523,8 @@ async def process_flow(pool, record):
     client = None
     try:
         now = utc_now()
-        if not record["accessKeyId"] or record["revoked"] or not record["messagingAccess"]:
+        if (not record["accessKeyId"] or record["revoked"]
+                or (record.get("keyExpiresAt") and as_utc(record["keyExpiresAt"]) <= now)):
             raise PermissionError("Messaging access is no longer active")
         if as_utc(record["expiresAt"]) <= now:
             raise TimeoutError("Telegram login attempt expired")
@@ -577,8 +574,7 @@ async def process_flow(pool, record):
 async def claim_campaign(pool):
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow('''
-            SELECT c.*, k.revoked AS "keyRevoked", k."messagingAccess" AS "keyMessagingAccess",
-              k."expiresAt" AS "keyExpiresAt"
+            SELECT c.*, k.revoked AS "keyRevoked", k."expiresAt" AS "keyExpiresAt"
             FROM "TelegramCampaign" c
             LEFT JOIN "ValidatorAccessKey" k ON k.id = c."accessKeyId"
             WHERE c.status = 'pending'
@@ -906,7 +902,6 @@ async def process_campaign(pool, campaign):
             return
         now = utc_now()
         if (not campaign.get("accessKeyId") or campaign.get("keyRevoked")
-                or not campaign.get("keyMessagingAccess")
                 or (campaign.get("keyExpiresAt") and as_utc(campaign["keyExpiresAt"]) <= utc_now())):
             raise PermissionError("Messaging access is no longer active")
         sessions = await campaign_sessions(pool, campaign["id"])
@@ -1309,7 +1304,7 @@ def scheduled_candidate(value: str, target_type="users"):
 async def claim_schedule(pool):
     async with pool.acquire() as connection, connection.transaction():
         row = await connection.fetchrow('''SELECT s.*, k.revoked AS "keyRevoked",
-          k."messagingAccess" AS "keyMessagingAccess", k."expiresAt" AS "keyExpiresAt"
+          k."expiresAt" AS "keyExpiresAt"
           FROM "TelegramMessageSchedule" s
           LEFT JOIN "ValidatorAccessKey" k ON k.id = s."accessKeyId"
           WHERE s.status = 'active' AND s."nextRunAt" <= NOW()
@@ -1326,7 +1321,6 @@ async def materialize_schedule(pool, schedule):
     try:
         now = utc_now()
         if (not schedule.get("accessKeyId") or schedule.get("keyRevoked")
-                or not schedule.get("keyMessagingAccess")
                 or (schedule.get("keyExpiresAt") and as_utc(schedule["keyExpiresAt"]) <= utc_now())):
             await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_access\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
             return
@@ -1455,16 +1449,12 @@ async def materialize_schedule(pool, schedule):
             "sessionCost": session_cost, "enabled": task_price.get("enabled", True),
         }
         async with pool.acquire() as connection, connection.transaction():
-            key = await connection.fetchrow('''SELECT revoked, "messagingAccess", "expiresAt",
-              "messageLimit", "messagesUsed" FROM "ValidatorAccessKey" WHERE id = $1 FOR UPDATE''',
+            key = await connection.fetchrow('''SELECT revoked, "expiresAt"
+              FROM "ValidatorAccessKey" WHERE id = $1 FOR UPDATE''',
               schedule["accessKeyId"])
-            if (not key or key["revoked"] or not key["messagingAccess"]
+            if (not key or key["revoked"]
                     or (key["expiresAt"] and as_utc(key["expiresAt"]) <= utc_now())):
                 await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_access\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
-                return
-            if (key["messageLimit"] is not None
-                    and int(key["messagesUsed"] or 0) + len(transmissions) > int(key["messageLimit"] or 0)):
-                await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_quota\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
                 return
             reserved = await connection.fetchrow('''UPDATE "ValidatorAccount" SET
               "creditsBalance" = "creditsBalance" - $2, "creditsSpent" = "creditsSpent" + $2,

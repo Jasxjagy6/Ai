@@ -2254,8 +2254,8 @@ function AccountCenter({
               Access, plan, and balance.
             </h2>
             <p className="mt-2 max-w-2xl text-xs leading-5 text-[#737d78]">
-              Manage the Signal Desk workspace you signed into. Telegram profile
-              names, photos, and stories are under Communication Settings.
+              Every workspace feature is included. Operations consume credits
+              from one transparent balance when they run.
             </p>
           </div>
           <Link
@@ -4330,7 +4330,7 @@ function TelegramSessionsView({
           label="Total accounts"
           value={sessions.length}
           icon={Smartphone}
-          sub={`${account.sessionLimit ?? "Unlimited"} plan allowance`}
+          sub="Unlimited fleet allowance"
         />
         <StatsCard
           label="Active accounts"
@@ -5086,7 +5086,7 @@ function TelegramSessionsView({
             </div>
             <div className="rounded-2xl border border-white/[0.07] bg-[#0b1717] px-4 py-3 text-xs text-[#71807c]">
               <span className="block font-mono text-xl text-[#eef7ed]">
-                {sessions.length} / {account.sessionLimit ?? "unlimited"}
+                {sessions.length} / unlimited
               </span>
               session allowance
             </div>

@@ -26,6 +26,16 @@ export const VALIDATOR_PLAN_CODES: ValidatorPlanCode[] = [
   "enterprise",
 ];
 
+function fullAccessFeatures(credits: number) {
+  return [
+    `${credits.toLocaleString()} workspace credits`,
+    "Every Signal Desk feature",
+    "Unlimited Telegram fleet size",
+    "Validator, messaging, schedules, reports, account tools, and AI Chatter",
+    "Operations use credits only when they run",
+  ];
+}
+
 export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
   {
     basic: {
@@ -37,16 +47,12 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       creditsIncluded: 2500,
       validatorAccess: true,
       messagingAccess: true,
-      aiChatAccess: false,
-      aiCampaignLimit: 0,
-      sessionLimit: 5,
+      aiChatAccess: true,
+      aiCampaignLimit: null,
+      sessionLimit: null,
       enabled: true,
       featured: false,
-      features: [
-        "2,500 workspace credits",
-        "5 Telegram sessions",
-        "Validator and messaging tools",
-      ],
+      features: fullAccessFeatures(2500),
     },
     pro: {
       code: "pro",
@@ -58,17 +64,11 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       validatorAccess: true,
       messagingAccess: true,
       aiChatAccess: true,
-      aiCampaignLimit: 3,
-      sessionLimit: 15,
+      aiCampaignLimit: null,
+      sessionLimit: null,
       enabled: true,
       featured: true,
-      features: [
-        "10,000 workspace credits",
-        "15 Telegram sessions",
-        "Schedules, reports, and affiliates",
-        "AI Chatter with smart conversation AI",
-        "5 credits per AI message sent",
-      ],
+      features: fullAccessFeatures(10000),
     },
     vip: {
       code: "vip",
@@ -81,16 +81,10 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       messagingAccess: true,
       aiChatAccess: true,
       aiCampaignLimit: null,
-      sessionLimit: 40,
+      sessionLimit: null,
       enabled: true,
       featured: false,
-      features: [
-        "30,000 workspace credits",
-        "40 Telegram sessions",
-        "Priority operating capacity",
-        "AI Chatter with smart conversation AI",
-        "5 credits per AI message sent",
-      ],
+      features: fullAccessFeatures(30000),
     },
     enterprise: {
       code: "enterprise",
@@ -103,16 +97,10 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       messagingAccess: true,
       aiChatAccess: true,
       aiCampaignLimit: null,
-      sessionLimit: 150,
+      sessionLimit: null,
       enabled: true,
       featured: false,
-      features: [
-        "120,000 workspace credits",
-        "150 Telegram sessions",
-        "Enterprise-scale throughput",
-        "AI Chatter with smart conversation AI",
-        "5 credits per AI message sent",
-      ],
+      features: fullAccessFeatures(120000),
     },
   };
 
@@ -126,7 +114,20 @@ export async function getValidatorPlans() {
     return Object.fromEntries(
       VALIDATOR_PLAN_CODES.map((code) => [
         code,
-        { ...DEFAULT_VALIDATOR_PLANS[code], ...(overrides[code] || {}), code },
+        {
+          ...DEFAULT_VALIDATOR_PLANS[code],
+          ...(overrides[code] || {}),
+          code,
+          validatorAccess: true,
+          messagingAccess: true,
+          aiChatAccess: true,
+          aiCampaignLimit: null,
+          sessionLimit: null,
+          features: fullAccessFeatures(
+            overrides[code]?.creditsIncluded ??
+              DEFAULT_VALIDATOR_PLANS[code].creditsIncluded,
+          ),
+        },
       ]),
     ) as Record<ValidatorPlanCode, ValidatorPlan>;
   } catch {
@@ -137,5 +138,23 @@ export async function getValidatorPlans() {
 export async function saveValidatorPlans(
   plans: Record<ValidatorPlanCode, ValidatorPlan>,
 ) {
-  await setSetting("validator_plans_v2_json", JSON.stringify(plans));
+  await setSetting(
+    "validator_plans_v2_json",
+    JSON.stringify(
+      Object.fromEntries(
+        VALIDATOR_PLAN_CODES.map((code) => [
+          code,
+          {
+            ...plans[code],
+            validatorAccess: true,
+            messagingAccess: true,
+            aiChatAccess: true,
+            aiCampaignLimit: null,
+            sessionLimit: null,
+            features: fullAccessFeatures(plans[code].creditsIncluded),
+          },
+        ]),
+      ),
+    ),
+  );
 }

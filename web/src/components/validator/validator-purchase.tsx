@@ -320,8 +320,9 @@ export function ValidatorPurchase({
             Choose your operating level.
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-sm leading-7 text-[#81908c] sm:text-base">
-            Your plan defines access, fleet size, and included credits. Every
-            paid task then draws from one transparent balance.
+            Every plan includes every Signal Desk feature and unlimited fleet
+            access. Choose by included credits; operations draw from one
+            transparent balance when they run.
           </p>
         </section>
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">

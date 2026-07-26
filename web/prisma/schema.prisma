@@ -286,6 +286,7 @@ model ValidatorAccount {
   accountSettingsBatches   TelegramAccountSettingsBatch[]
   accountSettingsJobs      TelegramAccountSettingsJob[]
   telegramClientCommands   TelegramClientCommand[]
+  telegramTrial            ValidatorTelegramTrial?
 
   @@index([referredById])
 }
@@ -317,6 +318,7 @@ model ValidatorAccessKey {
   messagingSchedules  TelegramMessageSchedule[]
   messagingLoginFlows TelegramLoginFlow[]
   creditTransactions  ValidatorCreditTransaction[]
+  telegramTrial       ValidatorTelegramTrial?
 
   @@index([accountId, createdAt])
 }
@@ -355,6 +357,23 @@ model ValidatorPurchase {
   @@index([email, createdAt])
   @@index([status, createdAt])
   @@index([accessKeyId])
+}
+
+model ValidatorTelegramTrial {
+  id                String              @id @default(cuid())
+  telegramUserId    BigInt              @unique
+  telegramUsername  String?             @db.VarChar(100)
+  telegramFirstName String?             @db.VarChar(100)
+  telegramLastName  String?             @db.VarChar(100)
+  accountId         String              @unique
+  account           ValidatorAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accessKeyId       String              @unique
+  accessKey         ValidatorAccessKey  @relation(fields: [accessKeyId], references: [id], onDelete: Cascade)
+  creditsGranted    Int                 @default(2500)
+  claimedAt         DateTime            @default(now())
+  expiresAt         DateTime
+
+  @@index([expiresAt])
 }
 
 model ValidatorCreditTransaction {
