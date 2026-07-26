@@ -26,6 +26,7 @@ import {
   X,
   XCircle,
 } from "lucide-react";
+import { TelegramHistoryView } from "@/components/validator/telegram-history-view";
 
 const PANEL = "border border-white/[0.065] bg-[#111311]";
 const FIELD = "w-full rounded-xl border border-white/10 bg-[#071111] px-3.5 py-2.5 text-sm text-[#eef7ed] outline-none transition placeholder:text-[#61706d] focus:border-[#b8ff4b]/60 focus:ring-2 focus:ring-[#b8ff4b]/10 disabled:cursor-not-allowed disabled:opacity-50";
@@ -37,7 +38,7 @@ type Props = {
   account: { id: string };
   notify: (message: string, tone?: Tone) => void;
 };
-type Mode = "manual" | "profileList" | "story";
+type Mode = "manual" | "profileList" | "story" | "deleteHistory";
 type Session = {
   id: string;
   label: string;
@@ -128,6 +129,7 @@ function batchLabel(kind: string) {
     remove_photos: "Profile photo removal",
     profile_list: "Profile list",
     story: "Story upload",
+    clear_history: "Delete chat history",
   }[kind] || kind.replaceAll("_", " ");
 }
 
@@ -457,6 +459,7 @@ export function AccountSettingsView({ notify }: Props) {
         ["manual", "Manual", Pencil],
         ["profileList", "Profile list", ListChecks],
         ["story", "Story", Upload],
+        ["deleteHistory", "Delete history", Trash2],
       ] as const).map(([id, label, Icon]) => (
         <button key={id} type="button" onClick={() => setMode(id)} className={`flex shrink-0 items-center gap-2 rounded-xl px-4 py-2.5 text-xs font-semibold transition ${mode === id ? "bg-[#b8ff4b] text-[#07100d]" : "text-[#71807c] hover:bg-white/[0.04] hover:text-white"}`}>
           <Icon size={14} /> {label}
@@ -478,7 +481,7 @@ export function AccountSettingsView({ notify }: Props) {
 
       {latestBatch && <BatchProgress batch={latestBatch} onCancel={() => cancelBatch(latestBatch)} />}
 
-      <div className="mt-6 grid gap-5 xl:grid-cols-[1fr_380px]">
+      <div className={`mt-6 grid gap-5 ${mode === "deleteHistory" ? "" : "xl:grid-cols-[1fr_380px]"}`}>
         <div>
           {mode === "manual" && (
             <form onSubmit={submitManual} className="space-y-5">
@@ -560,8 +563,9 @@ export function AccountSettingsView({ notify }: Props) {
               <StoryHistory batches={history.filter((batch) => batch.kind === "story")} expandedId={expandedStoryId} detail={storyDetail} onToggle={toggleStoryDetails} onCancel={cancelBatch} />
             </div>
           )}
+          {mode === "deleteHistory" && <TelegramHistoryView notify={notify} />}
         </div>
-        <aside className="space-y-5 xl:sticky xl:top-5 xl:self-start">{picker}<TargetSummary mode={targetMode} sessions={targetSessions} list={selectedList} /></aside>
+        {mode !== "deleteHistory" && <aside className="space-y-5 xl:sticky xl:top-5 xl:self-start">{picker}<TargetSummary mode={targetMode} sessions={targetSessions} list={selectedList} /></aside>}
       </div>
     </div>
   );

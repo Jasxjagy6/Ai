@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import mimetypes
 import os
 import re
 import sqlite3
@@ -17,7 +18,7 @@ from urllib.request import Request, urlopen
 
 import asyncpg
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from hydrogram import Client, enums, filters, raw
+from hydrogram import Client, enums, filters, raw, types, utils
 from hydrogram.errors import (
     AuthKeyDuplicated, AuthKeyUnregistered, FloodWait, PeerFlood,
     SessionPasswordNeeded, SessionRevoked, UserDeactivated, UserDeactivatedBan,
@@ -44,6 +45,15 @@ AI_CLIENTS = {}
 AI_CATCHUP_TASKS = set()
 AI_BUSY_SESSIONS = set()
 AI_TRANSIENT_CLIENTS = {}
+INTERACTIVE_CLIENTS = {}
+CLIENT_COMMAND_LOCKS = {}
+CLIENT_COMMAND_CONCURRENCY = max(1, min(16, int(os.getenv("TELEGRAM_CLIENT_COMMAND_CONCURRENCY", "8"))))
+ACCOUNT_SETTINGS_CONCURRENCY = max(1, min(16, int(os.getenv("ACCOUNT_SETTINGS_CONCURRENCY", "8"))))
+CAMPAIGN_CONCURRENCY = max(1, min(4, int(os.getenv("TELEGRAM_CAMPAIGN_CONCURRENCY", "1"))))
+CLEAR_HISTORY_DIALOG_LIMIT = max(100, min(10000, int(os.getenv("CLEAR_HISTORY_DIALOG_LIMIT", "3000"))))
+CLEAR_HISTORY_MAX_FLOOD_SECONDS = max(0, min(60, int(os.getenv("CLEAR_HISTORY_MAX_FLOOD_SECONDS", "15"))))
+MIN_BIGINT = -(2 ** 63)
+MAX_BIGINT = 2 ** 63 - 1
 
 
 def data_key() -> bytes:
@@ -81,8 +91,16 @@ def fingerprint(value: bytes | str) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+class SessionAuthorizationError(Exception):
+    pass
+
+
+SESSION_DEAD_ERRORS += (SessionAuthorizationError,)
+
+
 def error_code(error: Exception) -> str:
-    return error.__class__.__name__.upper()[:100]
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", error.__class__.__name__)
+    return name.upper()[:100]
 
 
 def random_between(minimum: float, maximum: float) -> float:
@@ -291,6 +309,10 @@ def client_for(record, session_string: str | None = None, updates: bool = False)
 
 
 async def disconnect(client: Client | None) -> None:
+    for entry in INTERACTIVE_CLIENTS.values():
+        if entry["client"] is client:
+            entry["lastUsed"] = utc_now()
+            return
     for client_key, entry in list(AI_CLIENTS.items()):
         if entry["client"] is not client:
             continue
@@ -303,12 +325,22 @@ async def disconnect(client: Client | None) -> None:
                 await entry["pool"].execute('''UPDATE "AiCampaignSession" SET "runtimeStatus" = 'stopped',
                   "lastHeartbeatAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', entry["record"]["membershipId"])
         return
-    transient_session = AI_TRANSIENT_CLIENTS.pop(id(client), None) if client else None
-    if transient_session:
-        AI_BUSY_SESSIONS.discard(transient_session)
+    transient = next((entry for entry in AI_TRANSIENT_CLIENTS.values()
+                      if entry["client"] is client), None) if client else None
+    if transient:
+        transient["leases"] = max(0, int(transient.get("leases", 0)) - 1)
+        if transient["leases"]:
+            return
+        AI_TRANSIENT_CLIENTS.pop(transient["sessionId"], None)
     if client and client.is_connected:
         with suppress(Exception):
             await client.disconnect()
+
+
+async def with_session_lock(session_id, operation):
+    lock = CLIENT_COMMAND_LOCKS.setdefault(session_id, asyncio.Lock())
+    async with lock:
+        return await operation()
 
 
 async def profile_details(client: Client, me) -> dict:
@@ -379,7 +411,7 @@ async def validate_session(pool, record):
         client = client_for(record, session_string)
         authorized = await asyncio.wait_for(client.connect(), timeout=45)
         if not authorized:
-            raise ValueError("Telegram session is not authorized")
+            raise SessionAuthorizationError("Telegram session is not authorized or has been revoked")
         me, session_string, details = await asyncio.wait_for(profile(client), timeout=30)
         await pool.execute('''
             UPDATE "TelegramSession" SET status = 'active', "isLoggedIn" = TRUE,
@@ -571,12 +603,20 @@ async def campaign_sessions(pool, campaign_id):
 
 
 async def open_campaign_client(record):
+    interactive = INTERACTIVE_CLIENTS.get(record["id"])
+    if interactive and interactive["client"].is_connected:
+        interactive["lastUsed"] = utc_now()
+        return interactive["client"]
     for _ in range(100):
         shared = next((entry for entry in AI_CLIENTS.values()
                        if entry["record"]["id"] == record["id"] and entry["client"].is_connected), None)
         if shared:
             shared["leases"] = int(shared.get("leases", 0)) + 1
             return shared["client"]
+        transient = AI_TRANSIENT_CLIENTS.get(record["id"])
+        if transient and transient["client"].is_connected:
+            transient["leases"] = int(transient.get("leases", 0)) + 1
+            return transient["client"]
         if record["id"] not in AI_BUSY_SESSIONS:
             break
         await asyncio.sleep(0.5)
@@ -589,12 +629,17 @@ async def open_campaign_client(record):
         authorized = await asyncio.wait_for(client.connect(), timeout=45)
         if not authorized:
             await disconnect(client)
-            raise ValueError("Telegram session is no longer authorized")
-        AI_TRANSIENT_CLIENTS[id(client)] = record["id"]
+            raise SessionAuthorizationError("Telegram session is no longer authorized or has been revoked")
+        AI_TRANSIENT_CLIENTS[record["id"]] = {
+            "client": client, "sessionId": record["id"], "leases": 1,
+        }
         return client
     except Exception:
-        AI_BUSY_SESSIONS.discard(record["id"])
+        with suppress(Exception):
+            await disconnect(client)
         raise
+    finally:
+        AI_BUSY_SESSIONS.discard(record["id"])
 
 
 async def claim_spam_check(pool):
@@ -860,7 +905,9 @@ async def process_campaign(pool, campaign):
               "lastProgressAt" = NOW() WHERE id = $1''', campaign["id"], pending)
             return
         now = utc_now()
-        if not campaign.get("accessKeyId") or campaign.get("keyRevoked") or not campaign.get("keyMessagingAccess"):
+        if (not campaign.get("accessKeyId") or campaign.get("keyRevoked")
+                or not campaign.get("keyMessagingAccess")
+                or (campaign.get("keyExpiresAt") and as_utc(campaign["keyExpiresAt"]) <= utc_now())):
             raise PermissionError("Messaging access is no longer active")
         sessions = await campaign_sessions(pool, campaign["id"])
         if not sessions:
@@ -881,7 +928,9 @@ async def process_campaign(pool, campaign):
             raise PermissionError("No selected sessions pass spam, health, and warmup safety checks")
         for session in sessions:
             try:
-                clients[session["id"]] = await open_campaign_client(session)
+                clients[session["id"]] = await with_session_lock(
+                    session["id"], lambda: open_campaign_client(session)
+                )
             except Exception as error:
                 signal = await record_session_signal(pool, session, campaign["id"], error)
                 await pool.execute('''UPDATE "TelegramCampaignSession" SET status = 'error', "lastErrorCode" = $3,
@@ -950,9 +999,11 @@ async def process_campaign(pool, campaign):
                 while True:
                     attempts += 1
                     try:
-                        message = await asyncio.wait_for(clients[session_id].send_message(
-                            await target_for(clients[session_id], recipient), campaign["message"], parse_mode=parse_mode(campaign["parseMode"])
-                        ), timeout=45)
+                        lock = CLIENT_COMMAND_LOCKS.setdefault(session_id, asyncio.Lock())
+                        async with lock:
+                            message = await asyncio.wait_for(clients[session_id].send_message(
+                                await target_for(clients[session_id], recipient), campaign["message"], parse_mode=parse_mode(campaign["parseMode"])
+                            ), timeout=45)
                         if not message:
                             raise ValueError("Telegram returned no sent message")
                         await pool.execute('''UPDATE "TelegramCampaignRecipient" SET "sessionId" = $2, status = 'sent',
@@ -1119,6 +1170,8 @@ async def process_campaign(pool, campaign):
             await pool.execute('''UPDATE "TelegramCampaign" SET status = 'cancelled', "skippedCount" = "skippedCount" + $2,
               "processedCount" = "processedCount" + $2, "finishedAt" = NOW(), "currentTarget" = NULL,
               "replyTrackingStatus" = 'cancelled', "lastProgressAt" = NOW() WHERE id = $1''', campaign["id"], pending)
+            await pool.execute('''UPDATE "TelegramCampaignSession" SET status = 'cancelled'
+              WHERE "campaignId" = $1 AND status IN ('pending', 'active')''', campaign["id"])
         else:
             if pending:
                 await pool.execute('''UPDATE "TelegramCampaignRecipient" SET status = 'failed',
@@ -1132,6 +1185,8 @@ async def process_campaign(pool, campaign):
             await pool.execute('''UPDATE "TelegramCampaign" SET status = 'completed', "finishedAt" = NOW(),
               "currentTarget" = NULL, "replyTrackingStatus" = $2, "replyTrackingUntil" = $3,
               "lastProgressAt" = NOW() WHERE id = $1''', campaign["id"], "tracking" if track else "disabled", reply_until)
+            await pool.execute('''UPDATE "TelegramCampaignSession" SET status = 'completed'
+              WHERE "campaignId" = $1 AND status IN ('pending', 'active')''', campaign["id"])
     except Exception as error:
         log.exception("Campaign %s failed", campaign["id"])
         pending = await pool.fetchval('SELECT COUNT(*) FROM "TelegramCampaignRecipient" WHERE "campaignId" = $1 AND status = \'pending\'', campaign["id"])
@@ -1140,6 +1195,10 @@ async def process_campaign(pool, campaign):
         await pool.execute('''UPDATE "TelegramCampaign" SET status = 'failed', "skippedCount" = "skippedCount" + $2,
           "processedCount" = "processedCount" + $2, "errorMessage" = $3, "finishedAt" = NOW(),
           "replyTrackingStatus" = 'failed', "lastProgressAt" = NOW() WHERE id = $1''', campaign["id"], pending, str(error)[:2000])
+        await pool.execute('''UPDATE "TelegramCampaignSession" SET status = 'failed',
+          "lastErrorCode" = COALESCE("lastErrorCode", 'CAMPAIGN_FAILED'),
+          "lastErrorMessage" = COALESCE("lastErrorMessage", $2)
+          WHERE "campaignId" = $1 AND status IN ('pending', 'active')''', campaign["id"], str(error)[:2000])
     finally:
         for client in clients.values():
             await disconnect(client)
@@ -1161,7 +1220,8 @@ async def scan_replies(pool, campaign):
     try:
         sessions = await campaign_sessions(pool, campaign["id"])
         recipients = await pool.fetch('''SELECT * FROM "TelegramCampaignRecipient" WHERE "campaignId" = $1
-          AND status = 'sent' AND replied = FALSE ORDER BY "sentAt" ASC LIMIT 1000''', campaign["id"])
+          AND status = 'sent' AND replied = FALSE
+          ORDER BY "lastCheckedAt" ASC NULLS FIRST, "sentAt" ASC LIMIT 1000''', campaign["id"])
         by_session = {}
         for row in recipients:
             by_session.setdefault(row["sessionId"], []).append(dict(row))
@@ -1170,27 +1230,55 @@ async def scan_replies(pool, campaign):
             if not pending:
                 continue
             try:
-                client = clients[session["id"]] = await open_campaign_client(session)
+                client = clients[session["id"]] = await with_session_lock(
+                    session["id"], lambda: open_campaign_client(session)
+                )
                 for recipient in pending:
                     try:
-                        async for message in client.get_chat_history(await target_for(client, recipient), limit=30):
-                            if message.id == recipient["messageId"]:
-                                continue
-                            if not message.outgoing and message.date and recipient["sentAt"] and as_utc(message.date) >= as_utc(recipient["sentAt"]):
-                                preview = (message.text or message.caption or "[media]")[:500]
-                                updated = await pool.execute('''UPDATE "TelegramCampaignRecipient" SET replied = TRUE,
-                                  "repliedAt" = $2, "replyMessageId" = $3, "replyPreview" = $4, "lastCheckedAt" = NOW(),
-                                  "updatedAt" = NOW() WHERE id = $1 AND replied = FALSE''', recipient["id"],
-                                  as_utc(message.date).replace(tzinfo=None), message.id, preview)
-                                if updated.endswith("1"):
-                                    await pool.execute('UPDATE "TelegramCampaign" SET "repliedCount" = "repliedCount" + 1 WHERE id = $1', campaign["id"])
-                                    await pool.execute('UPDATE "TelegramSession" SET "repliesReceived" = "repliesReceived" + 1 WHERE id = $1', session["id"])
-                                break
-                        await pool.execute('UPDATE "TelegramCampaignRecipient" SET "lastCheckedAt" = NOW() WHERE id = $1', recipient["id"])
+                        next_sent_at = await pool.fetchval('''SELECT "sentAt" FROM "TelegramCampaignRecipient"
+                          WHERE "sessionId" = $1 AND "peerId" = $2 AND status = 'sent'
+                            AND "sentAt" > $3 ORDER BY "sentAt" ASC, id ASC LIMIT 1''',
+                          session["id"], recipient["peerId"], recipient["sentAt"])
+
+                        async def find_reply():
+                            target = recipient.get("peerId") or await target_for(client, recipient)
+                            reply = None
+                            sent_at = as_utc(recipient.get("sentAt"))
+                            next_at = as_utc(next_sent_at)
+                            async for message in client.get_chat_history(target, limit=500):
+                                message_at = as_utc(getattr(message, "date", None))
+                                if sent_at and message_at and message_at < sent_at:
+                                    break
+                                if (message.id == recipient["messageId"] or message.outgoing
+                                        or not message_at or not sent_at or message_at < sent_at):
+                                    continue
+                                reply_to_id = getattr(message, "reply_to_message_id", None)
+                                if reply_to_id:
+                                    if reply_to_id == recipient["messageId"]:
+                                        return message
+                                    continue
+                                if next_at is None or message_at < next_at:
+                                    reply = message
+                            return reply
+
+                        message = await with_session_lock(session["id"], find_reply)
+                        if message:
+                            preview = (message.text or message.caption or "[media]")[:500]
+                            updated = await pool.execute('''UPDATE "TelegramCampaignRecipient" SET replied = TRUE,
+                              "repliedAt" = $2, "replyMessageId" = $3, "replyPreview" = $4, "lastCheckedAt" = NOW(),
+                              "updatedAt" = NOW() WHERE id = $1 AND replied = FALSE''', recipient["id"],
+                              as_utc(message.date).replace(tzinfo=None), message.id, preview)
+                            if updated.endswith("1"):
+                                await pool.execute('UPDATE "TelegramCampaign" SET "repliedCount" = "repliedCount" + 1 WHERE id = $1', campaign["id"])
+                                await pool.execute('UPDATE "TelegramSession" SET "repliesReceived" = "repliesReceived" + 1 WHERE id = $1', session["id"])
                     except Exception as error:
                         log.info("Reply check failed for recipient %s: %s", recipient["id"], error)
+                    finally:
+                        await pool.execute('UPDATE "TelegramCampaignRecipient" SET "lastCheckedAt" = NOW() WHERE id = $1', recipient["id"])
             except Exception as error:
                 log.warning("Reply session %s failed: %s", session["id"], error)
+                await pool.execute('''UPDATE "TelegramCampaignRecipient" SET "lastCheckedAt" = NOW()
+                  WHERE id = ANY($1::text[])''', [recipient["id"] for recipient in pending])
         if as_utc(campaign["replyTrackingUntil"]) <= utc_now():
             await pool.execute('UPDATE "TelegramCampaign" SET "replyTrackingStatus" = \'completed\' WHERE id = $1', campaign["id"])
     finally:
@@ -1212,7 +1300,9 @@ def scheduled_candidate(value: str, target_type="users"):
     if re.match(r"^[A-Za-z][A-Za-z0-9_]{4,31}$", username):
         return {"targetKey": f"username:{username.lower()}", "targetInput": target, "username": username}
     if re.match(r"^-?\d{5,20}$", target):
-        return {"targetKey": f"id:{target}", "targetInput": target, "telegramId": int(target)}
+        telegram_id = int(target)
+        if MIN_BIGINT <= telegram_id <= MAX_BIGINT:
+            return {"targetKey": f"id:{target}", "targetInput": target, "telegramId": telegram_id}
     return None
 
 
@@ -1235,7 +1325,9 @@ async def claim_schedule(pool):
 async def materialize_schedule(pool, schedule):
     try:
         now = utc_now()
-        if not schedule.get("accessKeyId") or schedule.get("keyRevoked") or not schedule.get("keyMessagingAccess"):
+        if (not schedule.get("accessKeyId") or schedule.get("keyRevoked")
+                or not schedule.get("keyMessagingAccess")
+                or (schedule.get("keyExpiresAt") and as_utc(schedule["keyExpiresAt"]) <= utc_now())):
             await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_access\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
             return
         session_ids = json.loads(schedule["sessionIds"]) if isinstance(schedule["sessionIds"], str) else schedule["sessionIds"]
@@ -1252,6 +1344,8 @@ async def materialize_schedule(pool, schedule):
             for session, reason in blocked:
                 await behavior_log(pool, session, "schedule_safety_block", succeeded=False, severity="warning",
                                    details={"scheduleId": schedule["id"], "reason": reason})
+            await pool.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_safety\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
+            return
         active_rows = [row for row in active_rows if not session_safety_reason(row)]
         active_ids = {row["id"] for row in active_rows}
         session_ids = [session_id for session_id in session_ids if session_id in active_ids]
@@ -1361,6 +1455,17 @@ async def materialize_schedule(pool, schedule):
             "sessionCost": session_cost, "enabled": task_price.get("enabled", True),
         }
         async with pool.acquire() as connection, connection.transaction():
+            key = await connection.fetchrow('''SELECT revoked, "messagingAccess", "expiresAt",
+              "messageLimit", "messagesUsed" FROM "ValidatorAccessKey" WHERE id = $1 FOR UPDATE''',
+              schedule["accessKeyId"])
+            if (not key or key["revoked"] or not key["messagingAccess"]
+                    or (key["expiresAt"] and as_utc(key["expiresAt"]) <= utc_now())):
+                await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_access\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
+                return
+            if (key["messageLimit"] is not None
+                    and int(key["messagesUsed"] or 0) + len(transmissions) > int(key["messageLimit"] or 0)):
+                await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_quota\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
+                return
             reserved = await connection.fetchrow('''UPDATE "ValidatorAccount" SET
               "creditsBalance" = "creditsBalance" - $2, "creditsSpent" = "creditsSpent" + $2,
               "updatedAt" = NOW() WHERE id = $1 AND active = TRUE AND "creditsBalance" >= $2
@@ -1371,8 +1476,7 @@ async def materialize_schedule(pool, schedule):
                 await connection.execute('UPDATE "TelegramMessageSchedule" SET status = \'paused_quota\', "updatedAt" = NOW() WHERE id = $1', schedule["id"])
                 return
             await connection.execute('''UPDATE "ValidatorAccessKey" SET "messagesUsed" = "messagesUsed" + $2
-              WHERE id = $1 AND revoked = FALSE AND "messagingAccess" = TRUE''',
-              schedule["accessKeyId"], len(transmissions))
+              WHERE id = $1''', schedule["accessKeyId"], len(transmissions))
             await connection.execute('''INSERT INTO "TelegramCampaign"
               (id, "accountId", "accessKeyId", "sourceListId", "scheduleId", name, "targetType", mode,
                message, "parseMode", status, "totalCount", "sessionCount", "reservedMessages", "reservedCredits",
@@ -1836,7 +1940,8 @@ async def reconcile_ai_clients(pool):
           WHERE "activeSessionId" IS NULL AND "runtimeStatus" = 'stopping' ''')
     for client_key, record in wanted.items():
         session_id = record["id"]
-        if session_id in AI_BUSY_SESSIONS:
+        if (session_id in AI_BUSY_SESSIONS or session_id in AI_TRANSIENT_CLIENTS
+                or session_id in INTERACTIVE_CLIENTS):
             continue
         if any(entry["record"]["id"] == session_id for entry in AI_CLIENTS.values() if entry["record"]["campaignId"] != record["campaignId"]):
             continue
@@ -2100,7 +2205,9 @@ async def process_ai_job(pool, job):
             credit_reserved = False
             await finish_ai_job(pool, job, "cancelled")
             return
-        sent = await asyncio.wait_for(entry["client"].send_message(int(job["peerId"]), text, parse_mode=enums.ParseMode.DISABLED), timeout=45)
+        sent = await with_session_lock(job["sessionId"], lambda: asyncio.wait_for(
+            entry["client"].send_message(int(job["peerId"]), text, parse_mode=enums.ParseMode.DISABLED), timeout=45
+        ))
         telegram_sent = True
         outgoing = {
             "id": f"tg-ai-{sent.id}", "telegramMessageId": int(sent.id),
@@ -2227,6 +2334,686 @@ async def ai_runtime(pool):
         await asyncio.gather(*AI_CATCHUP_TASKS, return_exceptions=True)
         for session_id in list(AI_CLIENTS):
             await stop_ai_client(pool, session_id)
+
+
+def iso_time(value):
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return as_utc(value).isoformat()
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, timezone.utc).isoformat()
+    return str(value)
+
+
+def enum_name(value):
+    return str(getattr(value, "value", value) or "").lower()
+
+
+def peer_value(value):
+    text = str(value)
+    return int(text) if text.lstrip("-").isdigit() else text
+
+
+def user_view(user):
+    if not user:
+        return None
+    return {
+        "id": str(user.id),
+        "firstName": getattr(user, "first_name", None),
+        "lastName": getattr(user, "last_name", None),
+        "username": getattr(user, "username", None),
+        "phone": getattr(user, "phone_number", None),
+        "isSelf": bool(getattr(user, "is_self", False)),
+        "isContact": bool(getattr(user, "is_contact", False)),
+        "isBot": bool(getattr(user, "is_bot", False)),
+        "isPremium": bool(getattr(user, "is_premium", False)),
+        "isVerified": bool(getattr(user, "is_verified", False)),
+        "isRestricted": bool(getattr(user, "is_restricted", False)),
+        "status": enum_name(getattr(user, "status", None)) or None,
+        "lastOnlineAt": iso_time(getattr(user, "last_online_date", None)),
+    }
+
+
+def chat_view(chat):
+    if not chat:
+        return None
+    title = getattr(chat, "title", None) or " ".join(filter(None, (
+        getattr(chat, "first_name", None), getattr(chat, "last_name", None)
+    ))) or getattr(chat, "username", None) or str(chat.id)
+    return {
+        "id": str(chat.id),
+        "type": enum_name(getattr(chat, "type", None)) or "unknown",
+        "title": title,
+        "firstName": getattr(chat, "first_name", None),
+        "lastName": getattr(chat, "last_name", None),
+        "username": getattr(chat, "username", None),
+        "bio": getattr(chat, "bio", None) or getattr(chat, "description", None),
+        "membersCount": getattr(chat, "members_count", None),
+        "isVerified": bool(getattr(chat, "is_verified", False)),
+        "isRestricted": bool(getattr(chat, "is_restricted", False)),
+        "isCreator": bool(getattr(chat, "is_creator", False)),
+        "isScam": bool(getattr(chat, "is_scam", False)),
+        "isFake": bool(getattr(chat, "is_fake", False)),
+        "hasProtectedContent": bool(getattr(chat, "has_protected_content", False)),
+    }
+
+
+def media_view(message):
+    kind = enum_name(getattr(message, "media", None)) or None
+    media = None
+    for name in ("photo", "video", "animation", "audio", "voice", "video_note", "document", "sticker"):
+        value = getattr(message, name, None)
+        if value is not None:
+            media = value
+            kind = kind or name
+            break
+    if not media:
+        return None
+    return {
+        "kind": kind,
+        "fileName": getattr(media, "file_name", None),
+        "mimeType": getattr(media, "mime_type", None),
+        "fileSize": getattr(media, "file_size", None),
+        "duration": getattr(media, "duration", None),
+        "width": getattr(media, "width", None),
+        "height": getattr(media, "height", None),
+        "emoji": getattr(media, "emoji", None),
+    }
+
+
+def message_view(message):
+    if not message:
+        return None
+    sender = user_view(getattr(message, "from_user", None))
+    sender_chat = chat_view(getattr(message, "sender_chat", None))
+    return {
+        "id": int(message.id),
+        "chatId": str(message.chat.id) if getattr(message, "chat", None) else None,
+        "text": str(getattr(message, "text", None) or getattr(message, "caption", None) or ""),
+        "date": iso_time(getattr(message, "date", None)),
+        "editDate": iso_time(getattr(message, "edit_date", None)),
+        "outgoing": bool(getattr(message, "outgoing", False)),
+        "replyToMessageId": getattr(message, "reply_to_message_id", None),
+        "views": getattr(message, "views", None),
+        "forwards": getattr(message, "forwards", None),
+        "sender": sender,
+        "senderChat": sender_chat,
+        "media": media_view(message),
+        "service": enum_name(getattr(message, "service", None)) or None,
+    }
+
+
+def member_view(member):
+    return {
+        "user": user_view(getattr(member, "user", None)),
+        "status": enum_name(getattr(member, "status", None)) or "member",
+        "customTitle": getattr(member, "custom_title", None),
+        "joinedAt": iso_time(getattr(member, "joined_date", None)),
+        "untilAt": iso_time(getattr(member, "until_date", None)),
+        "canBeEdited": bool(getattr(member, "can_be_edited", False)),
+    }
+
+
+def dialog_view(dialog):
+    return {
+        "chat": chat_view(dialog.chat),
+        "topMessage": message_view(dialog.top_message),
+        "unreadCount": int(dialog.unread_messages_count or 0),
+        "unreadMentions": int(dialog.unread_mentions_count or 0),
+        "unreadMark": bool(dialog.unread_mark),
+        "pinned": bool(dialog.is_pinned),
+    }
+
+
+def raw_input_peer(peer, users, chats):
+    if isinstance(peer, raw.types.PeerUser):
+        user = users.get(peer.user_id)
+        return raw.types.InputPeerUser(user_id=peer.user_id, access_hash=int(getattr(user, "access_hash", 0) or 0))
+    if isinstance(peer, raw.types.PeerChat):
+        return raw.types.InputPeerChat(chat_id=peer.chat_id)
+    channel = chats.get(peer.channel_id)
+    return raw.types.InputPeerChannel(channel_id=peer.channel_id, access_hash=int(getattr(channel, "access_hash", 0) or 0))
+
+
+async def safe_dialogs(client, limit=0):
+    current = 0
+    total = int(limit or ((1 << 31) - 1))
+    page_limit = min(100, total)
+    offset_date = 0
+    offset_id = 0
+    offset_peer = raw.types.InputPeerEmpty()
+    previous_offset = None
+    while current < total:
+        response = await client.invoke(raw.functions.messages.GetDialogs(
+            offset_date=offset_date, offset_id=offset_id, offset_peer=offset_peer,
+            limit=min(page_limit, total - current), hash=0,
+        ), sleep_threshold=60)
+        raw_dialogs = [item for item in (getattr(response, "dialogs", None) or [])
+                       if isinstance(item, raw.types.Dialog)]
+        if not raw_dialogs:
+            return
+        users = {item.id: item for item in (getattr(response, "users", None) or [])}
+        chats = {item.id: item for item in (getattr(response, "chats", None) or [])}
+        messages = {}
+        raw_messages = []
+        for message in (getattr(response, "messages", None) or []):
+            if isinstance(message, raw.types.MessageEmpty):
+                continue
+            raw_messages.append(message)
+            try:
+                messages[utils.get_peer_id(message.peer_id)] = await types.Message._parse(
+                    client=client, message=message, users=users, chats=chats
+                )
+            except Exception as error:
+                log.debug("Skipping malformed Telegram dialog message: %s", error)
+        for raw_dialog in raw_dialogs:
+            try:
+                dialog = types.Dialog._parse(client, raw_dialog, messages, users, chats)
+            except Exception as error:
+                log.info("Skipping inaccessible Telegram dialog %s: %s",
+                         utils.get_peer_id(raw_dialog.peer), error)
+                continue
+            if not dialog.chat:
+                continue
+            yield dialog
+            current += 1
+            if current >= total:
+                return
+        last = raw_dialogs[-1]
+        offset_id = int(last.top_message or 0)
+        peer_id = utils.get_peer_id(last.peer)
+        top = next((message for message in raw_messages
+                    if utils.get_peer_id(message.peer_id) == peer_id and int(message.id) == offset_id), None)
+        top_date = getattr(top, "date", None) if top else None
+        offset_date = int(top_date) if isinstance(top_date, (int, float)) else utils.datetime_to_timestamp(top_date) if top_date else 0
+        offset_peer = raw_input_peer(last.peer, users, chats)
+        next_offset = (offset_date, offset_id, peer_id)
+        if next_offset == previous_offset or len(raw_dialogs) < page_limit:
+            return
+        previous_offset = next_offset
+
+
+async def interactive_client(record):
+    session_id = record.get("sessionId") or record["id"]
+    shared = next((entry for entry in AI_CLIENTS.values()
+                   if entry["record"]["id"] == session_id and entry["client"].is_connected), None)
+    if shared:
+        return shared["client"]
+    transient = AI_TRANSIENT_CLIENTS.pop(session_id, None)
+    if transient and transient["client"].is_connected:
+        INTERACTIVE_CLIENTS[session_id] = {
+            "client": transient["client"], "lastUsed": utc_now(),
+        }
+        return transient["client"]
+    entry = INTERACTIVE_CLIENTS.get(session_id)
+    if entry and entry["client"].is_connected:
+        entry["lastUsed"] = utc_now()
+        return entry["client"]
+    if entry:
+        with suppress(Exception):
+            await entry["client"].disconnect()
+        INTERACTIVE_CLIENTS.pop(session_id, None)
+    session_string = canonical_session(
+        decrypt(record["sessionDataEncrypted"]), record["sessionFormat"], record["apiId"]
+    )
+    client = client_for({**record, "id": session_id}, session_string)
+    authorized = await asyncio.wait_for(client.connect(), timeout=45)
+    if not authorized:
+        await disconnect(client)
+        raise ValueError("Telegram session is no longer authorized")
+    INTERACTIVE_CLIENTS[session_id] = {"client": client, "lastUsed": utc_now()}
+    return client
+
+
+async def close_stale_interactive_clients():
+    cutoff = utc_now() - timedelta(minutes=3)
+    for session_id, entry in list(INTERACTIVE_CLIENTS.items()):
+        lock = CLIENT_COMMAND_LOCKS.get(session_id)
+        if entry["lastUsed"] >= cutoff or (lock and lock.locked()):
+            continue
+        INTERACTIVE_CLIENTS.pop(session_id, None)
+        with suppress(Exception):
+            await entry["client"].disconnect()
+
+
+async def claim_client_command(pool):
+    async with pool.acquire() as connection, connection.transaction():
+        row = await connection.fetchrow('''SELECT command.*, s."credentialId", s."sessionDataEncrypted",
+          s."sessionFormat", s.status AS "sessionStatus", s."isLoggedIn", s."deviceIdentity",
+          s."proxyEncrypted", s."proxyEnabled", s."antiDetectEnabled", c."apiId", c."apiHashEncrypted"
+          FROM "TelegramClientCommand" command
+          JOIN "TelegramSession" s ON s.id = command."sessionId"
+          JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
+          WHERE command.status = 'pending' AND command."expiresAt" > NOW()
+          ORDER BY command."createdAt" FOR UPDATE OF command SKIP LOCKED LIMIT 1''')
+        if not row:
+            return None
+        await connection.execute('''UPDATE "TelegramClientCommand" SET status = 'processing', attempts = attempts + 1,
+          "claimedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', row["id"])
+        return dict(row)
+
+
+PRIVACY_KEYS = {
+    "statusTimestamp": raw.types.InputPrivacyKeyStatusTimestamp,
+    "profilePhoto": raw.types.InputPrivacyKeyProfilePhoto,
+    "phoneNumber": raw.types.InputPrivacyKeyPhoneNumber,
+    "phoneCall": raw.types.InputPrivacyKeyPhoneCall,
+    "forwards": raw.types.InputPrivacyKeyForwards,
+    "chatInvite": raw.types.InputPrivacyKeyChatInvite,
+    "voiceMessages": raw.types.InputPrivacyKeyVoiceMessages,
+}
+NOTIFY_SCOPES = {
+    "users": raw.types.InputNotifyUsers,
+    "chats": raw.types.InputNotifyChats,
+    "broadcasts": raw.types.InputNotifyBroadcasts,
+}
+MEMBER_FILTERS = {
+    "search": enums.ChatMembersFilter.SEARCH,
+    "recent": enums.ChatMembersFilter.RECENT,
+    "administrators": enums.ChatMembersFilter.ADMINISTRATORS,
+    "bots": enums.ChatMembersFilter.BOTS,
+    "restricted": enums.ChatMembersFilter.RESTRICTED,
+    "banned": enums.ChatMembersFilter.BANNED,
+}
+
+
+def peer_notify_view(value):
+    mute_until = int(getattr(value, "mute_until", 0) or 0)
+    return {
+        "muted": bool(mute_until and mute_until > int(datetime.now().timestamp())),
+        "muteUntil": mute_until,
+        "showPreviews": getattr(value, "show_previews", None) is not False,
+        "silent": bool(getattr(value, "silent", False)),
+    }
+
+
+async def settings_view(client):
+    notifications = {}
+    for key, factory in NOTIFY_SCOPES.items():
+        value = await client.invoke(raw.functions.account.GetNotifySettings(peer=factory()))
+        notifications[key] = {
+            "muted": bool(getattr(value, "mute_until", 0) and getattr(value, "mute_until", 0) > int(datetime.now().timestamp())),
+            "muteUntil": getattr(value, "mute_until", 0) or 0,
+            "showPreviews": getattr(value, "show_previews", None) is not False,
+            "silent": bool(getattr(value, "silent", False)),
+        }
+    privacy = {}
+    for key, factory in PRIVACY_KEYS.items():
+        value = await client.invoke(raw.functions.account.GetPrivacy(key=factory()))
+        names = [rule.__class__.__name__ for rule in (getattr(value, "rules", None) or [])]
+        privacy[key] = "nobody" if "PrivacyValueDisallowAll" in names else "contacts" if "PrivacyValueAllowContacts" in names else "everybody"
+    authorizations = await client.invoke(raw.functions.account.GetAuthorizations())
+    password = await client.invoke(raw.functions.account.GetPassword())
+    return {
+        "notifications": notifications,
+        "privacy": privacy,
+        "password": {
+            "hasPassword": bool(getattr(password, "has_password", False)),
+            "hint": getattr(password, "hint", None),
+            "hasRecovery": bool(getattr(password, "has_recovery", False)),
+            "emailPattern": getattr(password, "email_unconfirmed_pattern", None),
+        },
+        "authorizationTtlDays": int(getattr(authorizations, "authorization_ttl_days", 0) or 0),
+        "authorizations": [{
+            "hash": str(item.hash), "current": bool(item.current), "deviceModel": item.device_model,
+            "platform": item.platform, "systemVersion": item.system_version, "appName": item.app_name,
+            "appVersion": item.app_version, "ip": item.ip, "country": item.country, "region": item.region,
+            "createdAt": iso_time(item.date_created), "activeAt": iso_time(item.date_active),
+        } for item in (getattr(authorizations, "authorizations", None) or [])],
+    }
+
+
+async def with_short_flood_retry(operation):
+    try:
+        return await operation()
+    except FloodWait as error:
+        wait = int(getattr(error, "value", 0) or 0)
+        if wait <= 0 or wait > CLEAR_HISTORY_MAX_FLOOD_SECONDS:
+            raise
+        await asyncio.sleep(wait + 0.25)
+        return await operation()
+
+
+def input_channel(peer):
+    if isinstance(peer, raw.types.InputChannel):
+        return peer
+    if isinstance(peer, raw.types.InputPeerChannel):
+        return raw.types.InputChannel(channel_id=peer.channel_id, access_hash=peer.access_hash)
+    raise ValueError("Telegram did not return a channel access hash")
+
+
+async def clear_one_dialog(client, chat, revoke=False, remove_dialog=True):
+    peer = await client.resolve_peer(chat.id)
+    chat_type = getattr(chat, "type", None)
+    is_private = chat_type in (enums.ChatType.PRIVATE, enums.ChatType.BOT)
+    is_bot = chat_type == enums.ChatType.BOT
+    is_group = chat_type == enums.ChatType.GROUP
+    is_channel = chat_type in (enums.ChatType.SUPERGROUP, enums.ChatType.CHANNEL)
+    cleared = left = deleted = blocked = False
+    warnings = []
+    if is_channel:
+        channel = input_channel(peer)
+        try:
+            await with_short_flood_retry(lambda: client.invoke(raw.functions.channels.DeleteHistory(
+                channel=channel, max_id=0, for_everyone=revoke
+            )))
+            cleared = True
+        except Exception as error:
+            warnings.append({"stage": "clear_history", "code": error_code(error), "error": str(error)[:300]})
+        if remove_dialog:
+            if revoke and bool(getattr(chat, "is_creator", False)):
+                try:
+                    await with_short_flood_retry(lambda: client.invoke(raw.functions.channels.DeleteChannel(channel=channel)))
+                    deleted = True
+                except Exception as error:
+                    warnings.append({"stage": "delete_channel", "code": error_code(error), "error": str(error)[:300]})
+            if not deleted:
+                await with_short_flood_retry(lambda: client.invoke(raw.functions.channels.LeaveChannel(channel=channel)))
+                left = True
+    elif is_group:
+        await with_short_flood_retry(lambda: client.invoke(raw.functions.messages.DeleteHistory(
+            peer=peer, max_id=0, just_clear=True, revoke=revoke
+        )))
+        cleared = True
+        if remove_dialog:
+            chat_id = getattr(peer, "chat_id", abs(int(chat.id)))
+            if revoke and bool(getattr(chat, "is_creator", False)):
+                try:
+                    await with_short_flood_retry(lambda: client.invoke(raw.functions.messages.DeleteChat(chat_id=chat_id)))
+                    deleted = True
+                except Exception as error:
+                    warnings.append({"stage": "delete_group", "code": error_code(error), "error": str(error)[:300]})
+            if not deleted:
+                await with_short_flood_retry(lambda: client.invoke(raw.functions.messages.DeleteChatUser(
+                    chat_id=chat_id, user_id=raw.types.InputUserSelf(), revoke_history=revoke
+                )))
+                left = True
+    elif is_private:
+        await with_short_flood_retry(lambda: client.invoke(raw.functions.messages.DeleteHistory(
+            peer=peer, max_id=0, just_clear=False if is_bot else not revoke, revoke=revoke
+        )))
+        cleared = True
+        deleted = bool(is_bot and remove_dialog)
+        if is_bot and remove_dialog:
+            with suppress(Exception):
+                await client.invoke(raw.functions.contacts.Block(id=peer))
+                blocked = True
+    else:
+        raise ValueError(f"Unsupported Telegram chat type: {chat_type}")
+    return {
+        "chatId": str(chat.id), "title": chat_view(chat)["title"], "type": enum_name(chat_type),
+        "ok": True, "action": "deleted" if deleted else "left" if left else "cleared",
+        "cleared": cleared, "left": left, "deleted": deleted, "blocked": blocked,
+        "warnings": warnings,
+    }
+
+
+async def execute_client_command(pool, command):
+    lock = CLIENT_COMMAND_LOCKS.setdefault(command["sessionId"], asyncio.Lock())
+    async with lock:
+        if command["sessionStatus"] != "active" or not command["isLoggedIn"]:
+            raise ValueError("Telegram session is not active and logged in")
+        client = await interactive_client(command)
+        payload = json_value(command.get("payload"))
+        kind = command["kind"]
+        result = None
+        result_data = None
+        result_mime = None
+        result_name = None
+        if kind == "bootstrap":
+            me = await client.get_me()
+            dialogs = [dialog_view(item) async for item in safe_dialogs(client, limit=200)]
+            result = {"me": user_view(me), "dialogs": dialogs}
+        elif kind == "dialogs":
+            result = {"dialogs": [dialog_view(item) async for item in safe_dialogs(client, limit=int(payload.get("limit") or 200))]}
+        elif kind == "messages":
+            messages = [message_view(item) async for item in client.get_chat_history(
+                int(payload["chatId"]), limit=int(payload.get("limit") or 50), offset_id=int(payload.get("offsetId") or 0)
+            )]
+            result = {"messages": list(reversed(messages))}
+        elif kind == "send_message":
+            sent = await client.send_message(int(payload["chatId"]), payload["text"], parse_mode=enums.ParseMode.DISABLED,
+                reply_to_message_id=payload.get("replyToMessageId"))
+            result = {"message": message_view(sent)}
+            await pool.execute('''UPDATE "TelegramSession" SET "messagesSent" = "messagesSent" + 1,
+              "lastActiveAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''', command["sessionId"])
+        elif kind == "edit_message":
+            value = await client.edit_message_text(int(payload["chatId"]), int(payload["messageId"]), payload["text"], parse_mode=enums.ParseMode.DISABLED)
+            result = {"message": message_view(value)}
+        elif kind == "delete_messages":
+            count = await client.delete_messages(int(payload["chatId"]), payload["messageIds"], revoke=bool(payload.get("revoke", True)))
+            result = {"deleted": int(count or 0), "messageIds": payload["messageIds"]}
+        elif kind == "forward_messages":
+            value = await client.forward_messages(int(payload["chatId"]), int(payload["fromChatId"]), payload["messageIds"])
+            values = value if isinstance(value, list) else [value]
+            result = {"messages": [message_view(item) for item in values if item]}
+        elif kind == "read_history":
+            result = {"read": bool(await client.read_chat_history(int(payload["chatId"]), int(payload.get("maxId") or 0)))}
+        elif kind == "search_messages":
+            result = {"messages": [message_view(item) async for item in client.search_messages(
+                int(payload["chatId"]), payload["query"], limit=int(payload.get("limit") or 50)
+            )]}
+        elif kind == "pinned_messages":
+            result = {"messages": [message_view(item) async for item in client.search_messages(
+                int(payload["chatId"]), filter=enums.MessagesFilter.PINNED,
+                limit=int(payload.get("limit") or 50)
+            )]}
+        elif kind == "pin_message":
+            await client.pin_chat_message(
+                int(payload["chatId"]), int(payload["messageId"]),
+                disable_notification=bool(payload.get("disableNotification")),
+            )
+            result = {"ok": True}
+        elif kind == "unpin_message":
+            result = {"ok": bool(await client.unpin_chat_message(
+                int(payload["chatId"]), int(payload["messageId"])
+            ))}
+        elif kind == "unpin_all_messages":
+            result = {"ok": bool(await client.unpin_all_chat_messages(int(payload["chatId"]))) }
+        elif kind == "react_message":
+            result = {"ok": bool(await client.send_reaction(
+                int(payload["chatId"]), int(payload["messageId"]), payload.get("emoji") or ""
+            ))}
+        elif kind == "chat":
+            result = {"chat": chat_view(await client.get_chat(int(payload["chatId"])))}
+        elif kind == "contacts":
+            result = {"contacts": [user_view(item) for item in await client.get_contacts()]}
+        elif kind == "add_contact":
+            user_id = peer_value(payload["userId"])
+            await client.add_contact(user_id, payload["firstName"], payload.get("lastName", ""), payload.get("phone", ""))
+            result = {"contact": user_view(await client.get_users(user_id))}
+        elif kind == "delete_contacts":
+            await client.delete_contacts([peer_value(item) for item in payload["userIds"]])
+            result = {"deleted": len(payload["userIds"])}
+        elif kind in ("block_user", "unblock_user"):
+            operation = client.block_user if kind == "block_user" else client.unblock_user
+            result = {"ok": bool(await operation(int(payload["userId"])))}
+        elif kind == "peer_notify":
+            peer = await client.resolve_peer(int(payload["chatId"]))
+            notify_peer = raw.types.InputNotifyPeer(peer=peer)
+            if "muted" in payload:
+                mute_until = int(datetime.now().timestamp()) + int(payload.get("muteUntilSeconds") or 0)
+                if payload["muted"] and not payload.get("muteUntilSeconds"):
+                    mute_until = 2147483647
+                await client.invoke(raw.functions.account.UpdateNotifySettings(
+                    peer=notify_peer,
+                    settings=raw.types.InputPeerNotifySettings(
+                        mute_until=mute_until if payload["muted"] else 0
+                    ),
+                ))
+            value = await client.invoke(raw.functions.account.GetNotifySettings(peer=notify_peer))
+            result = {"notification": peer_notify_view(value)}
+        elif kind == "common_chats":
+            chats = await client.get_common_chats(peer_value(payload["userId"]))
+            result = {"chats": [chat_view(item) for item in chats[:int(payload.get("limit") or 100)]]}
+        elif kind == "chat_members":
+            members = [member_view(item) async for item in client.get_chat_members(
+                int(payload["chatId"]), query=payload.get("query") or "",
+                limit=int(payload.get("limit") or 100),
+                filter=MEMBER_FILTERS.get(payload.get("filter"), enums.ChatMembersFilter.SEARCH),
+            )]
+            result = {"members": members}
+        elif kind == "add_chat_member":
+            result = {"ok": bool(await client.add_chat_members(
+                int(payload["chatId"]), peer_value(payload["userId"])
+            ))}
+        elif kind == "remove_chat_member":
+            await client.ban_chat_member(int(payload["chatId"]), peer_value(payload["userId"]))
+            if not payload.get("ban"):
+                await client.unban_chat_member(int(payload["chatId"]), peer_value(payload["userId"]))
+            result = {"ok": True}
+        elif kind == "set_chat_admin":
+            admin = bool(payload["admin"])
+            privileges = types.ChatPrivileges(
+                can_manage_chat=admin, can_delete_messages=admin,
+                can_restrict_members=admin, can_change_info=admin,
+                can_invite_users=admin, can_pin_messages=admin,
+                can_manage_video_chats=admin, can_manage_topics=admin,
+            )
+            result = {"ok": bool(await client.promote_chat_member(
+                int(payload["chatId"]), peer_value(payload["userId"]), privileges=privileges
+            ))}
+        elif kind == "update_chat":
+            chat_id = int(payload["chatId"])
+            if "title" in payload:
+                await client.set_chat_title(chat_id, payload["title"])
+            if "bio" in payload:
+                await client.set_chat_description(chat_id, payload["bio"])
+            result = {"chat": chat_view(await client.get_chat(chat_id))}
+        elif kind == "set_chat_photo":
+            await client.set_chat_photo(
+                int(payload["chatId"]),
+                photo=account_settings_media_path(command["accountId"], payload["mediaPath"]),
+            )
+            result = {"ok": True}
+        elif kind == "settings":
+            result = await settings_view(client)
+        elif kind == "update_notify":
+            settings = raw.types.InputPeerNotifySettings(
+                show_previews=payload.get("showPreviews"), silent=payload.get("silent"),
+                mute_until=(2147483647 if payload.get("muted") else 0) if "muted" in payload else None,
+            )
+            await client.invoke(raw.functions.account.UpdateNotifySettings(peer=NOTIFY_SCOPES[payload["scope"]](), settings=settings))
+            result = await settings_view(client)
+        elif kind == "update_privacy":
+            rule = {"everybody": raw.types.InputPrivacyValueAllowAll, "contacts": raw.types.InputPrivacyValueAllowContacts,
+                    "nobody": raw.types.InputPrivacyValueDisallowAll}[payload["value"]]()
+            await client.invoke(raw.functions.account.SetPrivacy(key=PRIVACY_KEYS[payload["key"]](), rules=[rule]))
+            result = await settings_view(client)
+        elif kind == "password":
+            action = payload["action"]
+            current = decrypt(payload["currentPasswordEncrypted"]).decode() if payload.get("currentPasswordEncrypted") else ""
+            new = decrypt(payload["newPasswordEncrypted"]).decode() if payload.get("newPasswordEncrypted") else ""
+            if action == "enable":
+                await client.enable_cloud_password(new, payload.get("hint", ""), payload.get("email") or None)
+            elif action == "change":
+                await client.change_cloud_password(current, new, payload.get("hint", ""))
+            else:
+                await client.remove_cloud_password(current)
+            result = await settings_view(client)
+        elif kind == "reset_authorization":
+            await client.invoke(raw.functions.account.ResetAuthorization(hash=int(payload["hash"])))
+            result = await settings_view(client)
+        elif kind == "reset_other_authorizations":
+            await client.invoke(raw.functions.auth.ResetAuthorizations())
+            result = await settings_view(client)
+        elif kind == "authorization_ttl":
+            await client.invoke(raw.functions.account.SetAuthorizationTTL(authorization_ttl_days=int(payload["days"])))
+            result = await settings_view(client)
+        elif kind == "update_profile":
+            await client.update_profile(payload["firstName"], payload.get("lastName", ""), payload.get("bio", ""))
+            result = {"me": user_view(await client.get_me())}
+        elif kind == "set_username":
+            await client.set_username(payload.get("username") or None)
+            result = {"me": user_view(await client.get_me())}
+        elif kind == "set_profile_photo":
+            await client.set_profile_photo(photo=account_settings_media_path(command["accountId"], payload["mediaPath"]))
+            result = {"ok": True}
+        elif kind == "send_media":
+            path = account_settings_media_path(command["accountId"], payload["mediaPath"])
+            common = {"caption": payload.get("caption", ""), "parse_mode": enums.ParseMode.DISABLED,
+                      "reply_to_message_id": payload.get("replyToMessageId")}
+            media_type = payload["mediaType"]
+            if media_type == "photo":
+                sent = await client.send_photo(int(payload["chatId"]), path, **common)
+            elif media_type == "video":
+                sent = await client.send_video(int(payload["chatId"]), path, file_name=payload.get("fileName"), **common)
+            elif media_type == "audio":
+                sent = await client.send_audio(int(payload["chatId"]), path, file_name=payload.get("fileName"), **common)
+            elif media_type == "voice":
+                sent = await client.send_voice(int(payload["chatId"]), path, **common)
+            else:
+                sent = await client.send_document(int(payload["chatId"]), path, file_name=payload.get("fileName"), **common)
+            result = {"message": message_view(sent)}
+        elif kind == "download_media":
+            message = await client.get_messages(int(payload["chatId"]), int(payload["messageId"]))
+            downloaded = await client.download_media(message, in_memory=True)
+            if not downloaded:
+                raise FileNotFoundError("Telegram media is no longer available")
+            result_data = downloaded.getvalue()
+            if len(result_data) > 25 * 1024 * 1024:
+                raise ValueError("Telegram media is larger than the 25MB client limit")
+            media = media_view(message) or {}
+            result_name = media.get("fileName") or f"telegram-{message.id}"
+            result_mime = media.get("mimeType") or mimetypes.guess_type(result_name)[0] or "application/octet-stream"
+            result = {"messageId": int(message.id), "size": len(result_data)}
+        elif kind in ("archive_chat", "unarchive_chat"):
+            operation = client.archive_chats if kind == "archive_chat" else client.unarchive_chats
+            result = {"ok": bool(await operation(int(payload["chatId"])))}
+        elif kind == "leave_chat":
+            await client.leave_chat(int(payload["chatId"]))
+            result = {"ok": True}
+        elif kind == "clear_chat":
+            chat = await client.get_chat(int(payload["chatId"]))
+            result = await clear_one_dialog(client, chat, bool(payload.get("revoke")), remove_dialog=False)
+        else:
+            raise ValueError(f"Unsupported Telegram client command: {kind}")
+        await pool.execute('''UPDATE "TelegramClientCommand" SET status = 'completed', payload = NULL,
+          result = $2::jsonb, "resultData" = $3, "resultMime" = $4, "resultName" = $5,
+          "errorCode" = NULL, "errorMessage" = NULL, "finishedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+          command["id"], json.dumps(result or {}), result_data, result_mime, result_name)
+
+
+async def client_command_worker(pool):
+    while True:
+        command = await claim_client_command(pool)
+        if not command:
+            await asyncio.sleep(0.35)
+            continue
+        try:
+            await execute_client_command(pool, command)
+        except Exception as error:
+            log.warning("Telegram client command %s failed: %s", command["id"], error)
+            if isinstance(error, (FloodWait, PeerFlood, *SESSION_DEAD_ERRORS)):
+                with suppress(Exception):
+                    await record_session_signal(pool, {**command, "id": command["sessionId"]}, None, error, getattr(error, "value", 0))
+            await pool.execute('''UPDATE "TelegramClientCommand" SET status = 'failed', payload = NULL,
+              "errorCode" = $2, "errorMessage" = $3, "finishedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
+              command["id"], error_code(error), str(error)[:2000])
+
+
+async def client_command_runtime(pool):
+    await pool.execute('''UPDATE "TelegramClientCommand" SET status = 'pending', "claimedAt" = NULL,
+      "updatedAt" = NOW() WHERE status = 'processing' ''')
+    workers = [asyncio.create_task(client_command_worker(pool), name=f"telegram-client-{index}")
+               for index in range(CLIENT_COMMAND_CONCURRENCY)]
+    try:
+        while True:
+            await pool.execute('''UPDATE "TelegramClientCommand" SET status = 'expired', payload = NULL,
+              "errorCode" = 'EXPIRED', "errorMessage" = 'Command expired before processing',
+              "finishedAt" = NOW(), "updatedAt" = NOW() WHERE status = 'pending' AND "expiresAt" <= NOW()''')
+            await pool.execute('''DELETE FROM "TelegramClientCommand" WHERE "expiresAt" < NOW() - INTERVAL '1 hour' ''')
+            await close_stale_interactive_clients()
+            await asyncio.sleep(15)
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        for entry in list(INTERACTIVE_CLIENTS.values()):
+            with suppress(Exception):
+                await entry["client"].disconnect()
+        INTERACTIVE_CLIENTS.clear()
 
 
 async def account_settings_tables_exist(pool):
@@ -2378,6 +3165,82 @@ async def send_account_story(client, account_id, payload):
     return "completed", {"success": True, "updates": result.__class__.__name__}
 
 
+async def clear_session_history(pool, job, record, client, payload):
+    revoke = bool(payload.get("revoke"))
+    concurrency = max(1, min(16, int(payload.get("concurrency") or 8)))
+    await pool.execute('''UPDATE "TelegramAccountSettingsJob" SET result = $2::jsonb,
+      "updatedAt" = NOW() WHERE id = $1''', job["id"], json.dumps({
+        "stage": "scanning", "total": 0, "processed": 0, "succeeded": 0, "failed": 0,
+        "cleared": 0, "left": 0, "deleted": 0, "blocked": 0, "revoke": revoke, "results": [],
+    }))
+    dialogs = []
+    async for dialog in safe_dialogs(client, limit=CLEAR_HISTORY_DIALOG_LIMIT):
+        if dialog and dialog.chat:
+            dialogs.append(dialog)
+    state = {
+        "stage": "running", "total": len(dialogs), "processed": 0, "succeeded": 0, "failed": 0,
+        "cleared": 0, "left": 0, "deleted": 0, "blocked": 0, "revoke": revoke, "results": [],
+        "currentTitle": None,
+    }
+    await pool.execute('''UPDATE "TelegramAccountSettingsJob" SET result = $2::jsonb,
+      "updatedAt" = NOW() WHERE id = $1''', job["id"], json.dumps(state))
+    next_index = 0
+    progress_lock = asyncio.Lock()
+    last_flush = datetime.min.replace(tzinfo=timezone.utc)
+
+    async def flush(force=False):
+        nonlocal last_flush
+        now = utc_now()
+        if not force and state["processed"] % 10 and (now - last_flush).total_seconds() < 0.75:
+            return
+        last_flush = now
+        await pool.execute('''UPDATE "TelegramAccountSettingsJob" SET result = $2::jsonb,
+          "updatedAt" = NOW() WHERE id = $1''', job["id"], json.dumps(state))
+
+    async def run_dialog(dialog):
+        chat = dialog.chat
+        try:
+            value = await clear_one_dialog(client, chat, revoke=revoke, remove_dialog=True)
+        except Exception as error:
+            value = {
+                "chatId": str(chat.id), "title": chat_view(chat)["title"],
+                "type": enum_name(getattr(chat, "type", None)), "ok": False,
+                "action": None, "cleared": False, "left": False, "deleted": False,
+                "blocked": False, "errorCode": error_code(error), "error": str(error)[:500],
+            }
+        async with progress_lock:
+            state["processed"] += 1
+            state["succeeded" if value["ok"] else "failed"] += 1
+            for key in ("cleared", "left", "deleted", "blocked"):
+                state[key] += int(bool(value.get(key)))
+            state["currentTitle"] = value.get("title")
+            state["results"] = ([value] + state["results"])[:250]
+            await flush()
+
+    async def worker():
+        nonlocal next_index
+        while True:
+            index = next_index
+            next_index += 1
+            if index >= len(dialogs):
+                return
+            if index % 8 == 0:
+                cancelled = await pool.fetchval('''SELECT "cancelRequested" FROM "TelegramAccountSettingsBatch"
+                  WHERE id = $1''', job["batchId"])
+                if cancelled:
+                    return
+            await run_dialog(dialogs[index])
+
+    if dialogs:
+        await asyncio.gather(*(worker() for _ in range(min(concurrency, len(dialogs)))))
+    cancelled = bool(await pool.fetchval('''SELECT "cancelRequested" FROM "TelegramAccountSettingsBatch"
+      WHERE id = $1''', job["batchId"]))
+    state["stage"] = "cancelled" if cancelled and state["processed"] < state["total"] else "completed"
+    state["currentTitle"] = None
+    await flush(force=True)
+    return ("cancelled" if state["stage"] == "cancelled" else "completed"), state
+
+
 async def finish_account_settings_job(pool, job, status, result=None, error=None):
     await pool.execute('''UPDATE "TelegramAccountSettingsJob" SET status = $2, "result" = $3::jsonb,
       "errorCode" = $4, "errorMessage" = $5, "finishedAt" = NOW(), "updatedAt" = NOW() WHERE id = $1''',
@@ -2386,7 +3249,7 @@ async def finish_account_settings_job(pool, job, status, result=None, error=None
     await sync_account_settings_batch(pool, job["batchId"])
 
 
-async def execute_account_settings_job(pool, job):
+async def _execute_account_settings_job(pool, job):
     session = await pool.fetchrow('''SELECT s.*, c."apiId", c."apiHashEncrypted"
       FROM "TelegramSession" s JOIN "TelegramApiCredential" c ON c.id = s."credentialId"
       WHERE s.id = $1 AND s."accountId" = $2''', job["sessionId"], job["accountId"])
@@ -2430,6 +3293,10 @@ async def execute_account_settings_job(pool, job):
             status, result = await send_account_story(client, job["accountId"], payload)
             await finish_account_settings_job(pool, job, status, result)
             return
+        elif job["action"] == "clear_history":
+            status, result = await clear_session_history(pool, job, record, client, payload)
+            await finish_account_settings_job(pool, job, status, result)
+            return
         else:
             raise ValueError(f"Unsupported account-settings action: {job['action']}")
         await finish_account_settings_job(pool, job, "completed", result)
@@ -2443,13 +3310,75 @@ async def execute_account_settings_job(pool, job):
         await disconnect(client)
 
 
+async def execute_account_settings_job(pool, job):
+    lock = CLIENT_COMMAND_LOCKS.setdefault(job["sessionId"], asyncio.Lock())
+    async with lock:
+        await _execute_account_settings_job(pool, job)
+
+
+async def account_settings_worker(pool):
+    while True:
+        job = await claim_account_settings_job(pool)
+        if job:
+            await execute_account_settings_job(pool, job)
+        else:
+            await asyncio.sleep(0.35)
+
+
+async def account_settings_runtime(pool):
+    workers = [asyncio.create_task(account_settings_worker(pool), name=f"account-settings-{index}")
+               for index in range(ACCOUNT_SETTINGS_CONCURRENCY)]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+
+async def campaign_worker(pool):
+    while True:
+        campaign = await claim_campaign(pool)
+        if campaign:
+            await process_campaign(pool, campaign)
+        else:
+            await asyncio.sleep(0.35)
+
+
+async def campaign_runtime(pool):
+    workers = [asyncio.create_task(campaign_worker(pool), name=f"telegram-campaign-{index}")
+               for index in range(CAMPAIGN_CONCURRENCY)]
+    try:
+        await asyncio.gather(*workers)
+    finally:
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+
+
+async def reply_tracking_runtime(pool):
+    while True:
+        campaign = await claim_reply_scan(pool)
+        if campaign:
+            await scan_replies(pool, campaign)
+        else:
+            await pool.execute('''UPDATE "TelegramCampaign" SET "replyTrackingStatus" = 'completed'
+              WHERE "replyTrackingStatus" = 'tracking' AND "replyTrackingUntil" <= NOW()''')
+            await asyncio.sleep(POLL_SECONDS)
+
+
 async def main():
     database_url = os.environ["DATABASE_URL"]
     pool = await asyncpg.create_pool(database_url, min_size=1, max_size=10, command_timeout=60)
     log.info("Hydrogram worker started")
     ai_task = asyncio.create_task(ai_runtime(pool), name="ai-runtime")
+    client_task = asyncio.create_task(client_command_runtime(pool), name="telegram-client-runtime")
+    reply_task = asyncio.create_task(reply_tracking_runtime(pool), name="telegram-reply-runtime")
+    campaign_task = None
+    account_settings_task = None
     try:
         await recover_account_settings_jobs(pool)
+        account_settings_task = asyncio.create_task(account_settings_runtime(pool), name="account-settings-runtime")
         interrupted = await pool.fetch('''UPDATE "TelegramCampaign" SET status = 'failed',
           "errorMessage" = 'Worker restarted while this campaign was running', "finishedAt" = NOW(),
           "replyTrackingStatus" = 'failed', "lastProgressAt" = NOW() WHERE status = 'running' RETURNING id''')
@@ -2461,6 +3390,7 @@ async def main():
             await pool.execute('''UPDATE "TelegramCampaign" SET "skippedCount" = "skippedCount" + $2,
               "processedCount" = "processedCount" + $2 WHERE id = $1''', campaign["id"], pending)
             await settle_campaign_quota(pool, campaign["id"])
+        campaign_task = asyncio.create_task(campaign_runtime(pool), name="telegram-campaign-runtime")
         while True:
             await pool.execute('''UPDATE "TelegramSession" SET status = 'queued_validation', "updatedAt" = NOW()
               WHERE status = 'validating' AND "updatedAt" < NOW() - INTERVAL '5 minutes' ''')
@@ -2480,19 +3410,11 @@ async def main():
                 continue
             profile_sync = await claim_profile_sync(pool)
             if profile_sync:
-                await sync_profile(pool, profile_sync)
+                await with_session_lock(profile_sync["id"], lambda: sync_profile(pool, profile_sync))
                 continue
             flow = await claim_flow(pool)
             if flow:
                 await process_flow(pool, flow)
-                continue
-            campaign = await claim_campaign(pool)
-            if campaign:
-                await process_campaign(pool, campaign)
-                continue
-            reply_scan = await claim_reply_scan(pool)
-            if reply_scan:
-                await scan_replies(pool, reply_scan)
                 continue
             schedule = await claim_schedule(pool)
             if schedule:
@@ -2500,23 +3422,20 @@ async def main():
                 continue
             spam_check = await claim_spam_check(pool)
             if spam_check:
-                await process_spam_check(pool, spam_check)
+                await with_session_lock(spam_check["id"], lambda: process_spam_check(pool, spam_check))
                 continue
             warmup = await claim_warmup(pool)
             if warmup:
-                await process_warmup(pool, warmup)
+                await with_session_lock(warmup["id"], lambda: process_warmup(pool, warmup))
                 await asyncio.sleep(random_between(WARMUP_DELAY_MIN_SECONDS, WARMUP_DELAY_MAX_SECONDS))
                 continue
-            as_job = await claim_account_settings_job(pool)
-            if as_job:
-                await execute_account_settings_job(pool, as_job)
-                continue
-            await pool.execute('''UPDATE "TelegramCampaign" SET "replyTrackingStatus" = 'completed'
-              WHERE "replyTrackingStatus" = 'tracking' AND "replyTrackingUntil" <= NOW()''')
             await asyncio.sleep(POLL_SECONDS)
     finally:
-        ai_task.cancel()
-        await asyncio.gather(ai_task, return_exceptions=True)
+        tasks = [ai_task, client_task, reply_task, *([campaign_task] if campaign_task else []),
+                 *([account_settings_task] if account_settings_task else [])]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await pool.close()
 
 

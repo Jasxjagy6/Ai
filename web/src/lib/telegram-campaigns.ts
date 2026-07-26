@@ -57,6 +57,9 @@ export type TelegramCampaignCandidate = {
   displayName?: string;
 };
 
+const MIN_BIGINT = BigInt("-9223372036854775808");
+const MAX_BIGINT = BigInt("9223372036854775807");
+
 export function telegramCampaignCandidate(
   input: string,
   targetType: "users" | "groups",
@@ -93,6 +96,7 @@ export function telegramCampaignCandidate(
   if (/^-?\d{5,20}$/.test(value)) {
     try {
       const telegramId = BigInt(value);
+      if (telegramId < MIN_BIGINT || telegramId > MAX_BIGINT) return null;
       return { targetKey: `id:${telegramId}`, targetInput: value, telegramId };
     } catch {
       return null;
@@ -120,6 +124,7 @@ function campaignView(campaign: {
   replyWindowHours: number;
   replyTrackingStatus: string;
   replyTrackingUntil: Date | null;
+  replyTrackingLastScanAt: Date | null;
   cancelRequested: boolean;
   currentTarget: string | null;
   errorMessage: string | null;
@@ -127,6 +132,17 @@ function campaignView(campaign: {
   startedAt: Date | null;
   finishedAt: Date | null;
   lastProgressAt: Date;
+  scheduleId?: string | null;
+  configuration?: Prisma.JsonValue | null;
+  reservedMessages?: number;
+  reservedCredits?: number;
+  quotaSettled?: boolean;
+  creditsSettled?: boolean;
+  schedule?: {
+    id: string;
+    name: string;
+    intervalMinutes: number;
+  } | null;
 }) {
   return {
     ...campaign,
@@ -187,28 +203,37 @@ export async function createTelegramCampaign(
   const sessionById = new Map(
     sessionRows.map((session) => [session.id, session]),
   );
-  const sessions = requestedSessionIds
-    .map((id) => sessionById.get(id)!)
-    .filter((session) => telegramSessionSafety(session).massDmEligible);
-  if (!sessions.length)
+  const sessions = requestedSessionIds.map((id) => sessionById.get(id)!);
+  const blockedSessions = sessions
+    .map((session) => ({ session, safety: telegramSessionSafety(session) }))
+    .filter((item) => !item.safety.massDmEligible);
+  if (blockedSessions.length) {
+    const first = blockedSessions[0];
     throw new TelegramControlError(
-      "No selected sessions pass spam, health, and warmup safety checks",
+      `${first.session.label}: ${first.safety.eligibilityReason}${blockedSessions.length > 1 ? ` (${blockedSessions.length} selected sessions blocked)` : ""}`,
       423,
       "NO_MASS_DM_ELIGIBLE_SESSIONS",
     );
+  }
   const sessionIds = sessions.map((session) => session.id);
 
   const candidates = new Map<string, TelegramCampaignCandidate>();
   if (data.sourceListId) {
     const list = await prisma.contactList.findFirst({
       where: { id: data.sourceListId, accountId: account.id },
-      select: { id: true, itemsCount: true },
+      select: { id: true, type: true, itemsCount: true },
     });
     if (!list)
       throw new TelegramControlError(
         "Source list not found",
         404,
         "TELEGRAM_SOURCE_LIST_NOT_FOUND",
+      );
+    if (!["users", "merged"].includes(list.type))
+      throw new TelegramControlError(
+        "User campaigns require a Users or Merged source list",
+        400,
+        "TELEGRAM_SOURCE_LIST_TYPE_INVALID",
       );
     if (list.itemsCount > 200_000)
       throw new TelegramControlError(
@@ -381,6 +406,43 @@ export async function createTelegramCampaign(
 
   return prisma.$transaction(
     async (transaction) => {
+      const [accessKey] = await transaction.$queryRaw<
+        Array<{
+          accountId: string;
+          revoked: boolean;
+          messagingAccess: boolean;
+          expiresAt: Date | null;
+          messageLimit: number | null;
+          messagesUsed: number;
+        }>
+      >(Prisma.sql`SELECT "accountId", revoked, "messagingAccess", "expiresAt",
+          "messageLimit", "messagesUsed" FROM "ValidatorAccessKey"
+          WHERE id = ${account.accessKeyId!} FOR UPDATE`);
+      if (
+        !accessKey ||
+        accessKey.accountId !== account.id ||
+        accessKey.revoked ||
+        !accessKey.messagingAccess ||
+        (accessKey.expiresAt && accessKey.expiresAt <= new Date())
+      )
+        throw new TelegramControlError(
+          "Messaging access is no longer active",
+          403,
+          "MESSAGING_ACCESS_REQUIRED",
+        );
+      if (
+        accessKey.messageLimit != null &&
+        accessKey.messagesUsed + transmissions.length > accessKey.messageLimit
+      )
+        throw new TelegramControlError(
+          "This campaign exceeds the active access key's remaining message allowance",
+          429,
+          "TELEGRAM_MESSAGE_LIMIT_EXCEEDED",
+        );
+      await transaction.validatorAccessKey.update({
+        where: { id: account.accessKeyId! },
+        data: { messagesUsed: { increment: transmissions.length } },
+      });
       const campaign = await transaction.telegramCampaign.create({
         data: {
           accountId: account.id,
@@ -432,10 +494,6 @@ export async function createTelegramCampaign(
           mode: data.mode,
         },
       });
-      await transaction.validatorAccessKey.updateMany({
-        where: { id: account.accessKeyId!, accountId: account.id },
-        data: { messagesUsed: { increment: transmissions.length } },
-      });
       for (let offset = 0; offset < transmissions.length; offset += 1000) {
         await transaction.telegramCampaignRecipient.createMany({
           data: transmissions.slice(offset, offset + 1000).map((candidate) => ({
@@ -479,9 +537,22 @@ export async function listTelegramCampaigns(accountId: string, limit = 50, from?
 export async function getTelegramCampaign(
   accountId: string,
   campaignId: string,
+  options: {
+    page?: number;
+    pageSize?: number;
+    search?: string;
+    status?: string;
+    reply?: string;
+    sessionId?: string;
+  } = {},
 ) {
   const campaign = await prisma.telegramCampaign.findFirst({
     where: { id: campaignId, accountId },
+    include: {
+      schedule: {
+        select: { id: true, name: true, intervalMinutes: true },
+      },
+    },
   });
   if (!campaign)
     throw new TelegramControlError(
@@ -489,17 +560,69 @@ export async function getTelegramCampaign(
       404,
       "TELEGRAM_CAMPAIGN_NOT_FOUND",
     );
-  const [recipients, sessions] = await Promise.all([
+  const requestedPage = Number(options.page);
+  const requestedPageSize = Number(options.pageSize);
+  const page = Number.isFinite(requestedPage)
+    ? Math.max(1, Math.trunc(requestedPage))
+    : 1;
+  const pageSize = Number.isFinite(requestedPageSize)
+    ? Math.max(25, Math.min(500, Math.trunc(requestedPageSize)))
+    : 100;
+  const search = options.search?.trim().slice(0, 160);
+  const parsedNumericSearch =
+    search && /^-?\d{1,20}$/.test(search) ? BigInt(search) : null;
+  const numericSearch =
+    parsedNumericSearch != null &&
+    parsedNumericSearch >= MIN_BIGINT &&
+    parsedNumericSearch <= MAX_BIGINT
+      ? parsedNumericSearch
+      : null;
+  const recipientWhere: Prisma.TelegramCampaignRecipientWhereInput = {
+    campaignId,
+    ...(options.status && options.status !== "all"
+      ? { status: options.status }
+      : {}),
+    ...(options.reply === "replied"
+      ? { replied: true }
+      : options.reply === "no_reply"
+        ? { replied: false, status: "sent" }
+        : {}),
+    ...(options.sessionId && options.sessionId !== "all"
+      ? { sessionId: options.sessionId }
+      : {}),
+    ...(search
+      ? {
+          OR: [
+            { targetInput: { contains: search, mode: "insensitive" } },
+            { username: { contains: search, mode: "insensitive" } },
+            { displayName: { contains: search, mode: "insensitive" } },
+            { phone: { contains: search, mode: "insensitive" } },
+            { errorCode: { contains: search, mode: "insensitive" } },
+            { errorMessage: { contains: search, mode: "insensitive" } },
+            ...(numericSearch == null
+              ? []
+              : [
+                  { telegramId: numericSearch },
+                  { messageId: numericSearch },
+                  { replyMessageId: numericSearch },
+                ]),
+          ],
+        }
+      : {}),
+  };
+  const [recipients, recipientCount, sessions, sessionRecipientCounts, sessionReplyCounts] = await Promise.all([
     prisma.telegramCampaignRecipient.findMany({
-      where: { campaignId },
+      where: recipientWhere,
       orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-      take: 500,
+      skip: (page - 1) * pageSize,
+      take: pageSize,
       select: {
         id: true,
         sessionId: true,
         targetInput: true,
         username: true,
         telegramId: true,
+        phone: true,
         displayName: true,
         status: true,
         attempts: true,
@@ -511,8 +634,13 @@ export async function getTelegramCampaign(
         repliedAt: true,
         replyMessageId: true,
         replyPreview: true,
+        lastCheckedAt: true,
+        session: {
+          select: { label: true, username: true, phone: true },
+        },
       },
     }),
+    prisma.telegramCampaignRecipient.count({ where: recipientWhere }),
     prisma.telegramCampaignSession.findMany({
       where: { campaignId },
       orderBy: { position: "asc" },
@@ -520,7 +648,24 @@ export async function getTelegramCampaign(
         session: { select: { label: true, username: true, phone: true } },
       },
     }),
+    prisma.telegramCampaignRecipient.groupBy({
+      by: ["sessionId"],
+      where: { campaignId, sessionId: { not: null } },
+      _count: { _all: true },
+      _sum: { attempts: true },
+    }),
+    prisma.telegramCampaignRecipient.groupBy({
+      by: ["sessionId"],
+      where: { campaignId, sessionId: { not: null }, replied: true },
+      _count: { _all: true },
+    }),
   ]);
+  const recipientCountBySession = new Map(
+    sessionRecipientCounts.map((item) => [item.sessionId, item]),
+  );
+  const replyCountBySession = new Map(
+    sessionReplyCounts.map((item) => [item.sessionId, item._count._all]),
+  );
   return {
     campaign: campaignView(campaign),
     recipients: recipients.map((recipient) => ({
@@ -529,7 +674,20 @@ export async function getTelegramCampaign(
       messageId: recipient.messageId?.toString() || null,
       replyMessageId: recipient.replyMessageId?.toString() || null,
     })),
-    sessions,
+    sessions: sessions.map((entry) => ({
+      ...entry,
+      recipientCount:
+        recipientCountBySession.get(entry.sessionId)?._count._all || 0,
+      attemptCount:
+        recipientCountBySession.get(entry.sessionId)?._sum.attempts || 0,
+      repliedCount: replyCountBySession.get(entry.sessionId) || 0,
+    })),
+    pagination: {
+      page,
+      pageSize,
+      total: recipientCount,
+      totalPages: Math.max(1, Math.ceil(recipientCount / pageSize)),
+    },
   };
 }
 

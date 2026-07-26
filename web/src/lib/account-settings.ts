@@ -25,7 +25,7 @@ export class AccountSettingsError extends Error {
 
 export type AccountSettingsJobInput = {
   sessionId: string;
-  action: "update_profile" | "remove_photos" | "set_photo" | "send_story";
+  action: "update_profile" | "remove_photos" | "set_photo" | "send_story" | "clear_history";
   position?: number;
   payload?: Prisma.InputJsonValue;
 };
@@ -83,11 +83,19 @@ export async function validateMediaToken(
 
 export async function resolveAccountSettingsTargets(
   accountId: string,
-  input: { sessionIds?: unknown; sessionListId?: unknown },
+  input: { sessionIds?: unknown; sessionListId?: unknown; sessionListIds?: unknown },
 ) {
-  if (typeof input.sessionListId === "string" && input.sessionListId) {
-    const list = await prisma.telegramSessionList.findFirst({
-      where: { id: input.sessionListId, accountId },
+  const requestedListIds = [
+    ...(Array.isArray(input.sessionListIds)
+      ? input.sessionListIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : []),
+    ...(typeof input.sessionListId === "string" && input.sessionListId ? [input.sessionListId] : []),
+  ];
+  const listIds = [...new Set(requestedListIds)];
+  if (listIds.length) {
+    if (listIds.length > 100) throw new AccountSettingsError("Select at most 100 session lists", 400, "TOO_MANY_SESSION_LISTS");
+    const lists = await prisma.telegramSessionList.findMany({
+      where: { id: { in: listIds }, accountId },
       include: {
         members: {
           orderBy: { position: "asc" },
@@ -95,9 +103,20 @@ export async function resolveAccountSettingsTargets(
         },
       },
     });
-    if (!list) throw new AccountSettingsError("Session list not found", 404, "SESSION_LIST_NOT_FOUND");
-    if (!list.members.length) throw new AccountSettingsError("Session list is empty", 400, "EMPTY_SESSION_LIST");
-    return list.members.map((member) => member.session);
+    if (lists.length !== listIds.length) throw new AccountSettingsError("One or more session lists were not found", 404, "SESSION_LIST_NOT_FOUND");
+    const byId = new Map(lists.map((list) => [list.id, list]));
+    const sessions = [];
+    const seen = new Set<string>();
+    for (const id of listIds) {
+      for (const member of byId.get(id)!.members) {
+        if (seen.has(member.sessionId)) continue;
+        seen.add(member.sessionId);
+        sessions.push(member.session);
+      }
+    }
+    if (!sessions.length) throw new AccountSettingsError("The selected session lists are empty", 400, "EMPTY_SESSION_LIST");
+    if (sessions.length > 1000) throw new AccountSettingsError("The selected lists contain more than 1,000 unique sessions", 400, "TOO_MANY_SESSIONS");
+    return sessions;
   }
 
   const sessionIds = Array.isArray(input.sessionIds)

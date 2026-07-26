@@ -281,19 +281,52 @@ export async function importTelegramSessions(account: {
   if (files.length > 20) throw new TelegramControlError("Upload no more than 20 files at once", 413, "TELEGRAM_SESSION_BATCH_TOO_LARGE");
   const credential = await prisma.telegramApiCredential.findUnique({ where: { accountId: account.id } });
   if (!credential) throw new TelegramControlError("Add your Telegram api_id and api_hash before importing sessions", 409, "TELEGRAM_CREDENTIALS_REQUIRED");
-  const candidates = (await Promise.all(files.map(expandFile))).flat();
-  if (!candidates.length) throw new TelegramControlError("No supported sessions were found", 400, "TELEGRAM_SESSION_EMPTY");
+  const candidates: ImportCandidate[] = [];
+  const results: Array<{
+    ok: boolean;
+    filename: string;
+    error?: string;
+    code?: string;
+    session?: ReturnType<typeof sessionView>;
+  }> = [];
+  for (const file of files) {
+    try {
+      const expanded = await expandFile(file);
+      if (!expanded.length)
+        throw new TelegramControlError(
+          "No supported sessions were found in this file",
+          400,
+          "TELEGRAM_SESSION_EMPTY",
+        );
+      candidates.push(...expanded);
+    } catch (error) {
+      const known = telegramControlError(error);
+      if (!known) throw error;
+      results.push({
+        ok: false,
+        filename: file.name.slice(0, 255),
+        error: known.message,
+        code: known.code,
+      });
+    }
+  }
+  if (!candidates.length) return results;
   const currentCount = await prisma.telegramSession.count({ where: { accountId: account.id } });
   if (account.sessionLimit != null && currentCount + candidates.length > account.sessionLimit) {
     throw new TelegramControlError(`Your plan allows ${account.sessionLimit} Telegram sessions`, 403, "TELEGRAM_SESSION_LIMIT_EXCEEDED");
   }
-  const results = [];
   for (const candidate of candidates) {
-    const format = detectFormat(candidate.data);
-    const normalized = format === "sqlite" ? candidate.data : Buffer.from(candidate.data.toString("utf8").trim(), "utf8");
     const filename = candidate.name.split(/[\\/]/).pop() || "Imported session";
-    const label = filename.replace(/\.(session|sqlite|db|json|txt)$/i, "").slice(0, 100) || "Imported session";
     try {
+      const format = detectFormat(candidate.data);
+      const normalized =
+        format === "sqlite"
+          ? candidate.data
+          : Buffer.from(candidate.data.toString("utf8").trim(), "utf8");
+      const label =
+        filename
+          .replace(/\.(session|sqlite|db|json|txt)$/i, "")
+          .slice(0, 100) || "Imported session";
       const session = await prisma.telegramSession.create({
         data: {
           accountId: account.id,
@@ -307,7 +340,7 @@ export async function importTelegramSessions(account: {
           deviceIdentity: defaultDeviceIdentity(),
         },
       });
-      results.push({ ok: true, session: sessionView(session) });
+      results.push({ ok: true, filename, session: sessionView(session) });
     } catch (error) {
       const known = telegramControlError(error);
       if (!known) throw error;

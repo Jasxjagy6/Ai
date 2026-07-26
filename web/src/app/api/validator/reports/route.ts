@@ -36,7 +36,7 @@ export async function GET(request: Request) {
       orderBy: { createdAt: "desc" },
       take: 250,
       select: {
-        id: true, name: true, status: true, targetType: true, mode: true,
+        id: true, name: true, status: true, targetType: true, mode: true, scheduleId: true,
         totalCount: true, sentCount: true, failedCount: true, skippedCount: true,
         repliedCount: true, sessionCount: true, createdAt: true, startedAt: true,
         finishedAt: true, errorMessage: true,
@@ -74,7 +74,7 @@ export async function GET(request: Request) {
       startedAt: run.startedAt, finishedAt: run.finishedAt, error: run.errorMessage,
     })),
     ...messaging.map((run) => ({
-      id: run.id, kind: "message_run", name: run.name, output: `${run.targetType} / ${run.mode}`,
+       id: run.id, kind: "message_run", name: run.name, output: `${run.targetType} / ${run.mode}${run.scheduleId ? " / scheduled" : " / immediate"}`,
       status: run.status, total: run.totalCount, succeeded: run.sentCount,
       failed: run.failedCount, skipped: run.skippedCount, secondary: run.repliedCount,
       secondaryLabel: "replies", requests: run.sessionCount, createdAt: run.createdAt,

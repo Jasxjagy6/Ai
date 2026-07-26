@@ -285,6 +285,7 @@ model ValidatorAccount {
   aiCampaigns              AiCampaign[]
   accountSettingsBatches   TelegramAccountSettingsBatch[]
   accountSettingsJobs      TelegramAccountSettingsJob[]
+  telegramClientCommands   TelegramClientCommand[]
 
   @@index([referredById])
 }
@@ -613,6 +614,7 @@ model TelegramSession {
   aiResponseLogs          AiResponseLog[]
   aiCampaignMemberships   AiCampaignSession[]
   accountSettingsJobs     TelegramAccountSettingsJob[]
+  clientCommands          TelegramClientCommand[]
 
   @@unique([accountId, sessionFingerprint])
   @@index([accountId, createdAt])
@@ -701,6 +703,33 @@ model TelegramAccountSettingsJob {
   @@index([batchId, status, position])
   @@index([accountId, createdAt])
   @@index([sessionId, createdAt])
+}
+
+model TelegramClientCommand {
+  id           String           @id @default(cuid())
+  accountId    String
+  account      ValidatorAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  sessionId    String
+  session      TelegramSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  kind         String           @db.VarChar(50)
+  status       String           @default("pending") @db.VarChar(20)
+  payload      Json?
+  result       Json?
+  resultData   Bytes?
+  resultMime   String?          @db.VarChar(100)
+  resultName   String?          @db.VarChar(255)
+  errorCode    String?          @db.VarChar(100)
+  errorMessage String?
+  attempts     Int              @default(0)
+  expiresAt    DateTime
+  claimedAt    DateTime?
+  finishedAt   DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([status, createdAt])
+  @@index([accountId, sessionId, createdAt])
+  @@index([expiresAt])
 }
 
 model TelegramLoginFlow {

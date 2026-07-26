@@ -3,6 +3,7 @@ import type { NextRequest } from "next/server";
 
 const ALLOWED_PREFIXES = [
   "/workspace",
+  "/telegram",
   "/buy",
   "/validator-admin",
   "/api/validator",

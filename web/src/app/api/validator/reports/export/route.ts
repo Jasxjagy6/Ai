@@ -25,7 +25,7 @@ export async function GET(request: Request) {
   const where = { accountId: account.id, ...(range.createdAt ? { createdAt: range.createdAt } : {}) };
   const [validation, campaigns, accountBatches, aiCampaigns] = await Promise.all([
     prisma.linkFilterJob.findMany({ where, orderBy: { createdAt: "desc" }, include: { items: true } }),
-    prisma.telegramCampaign.findMany({ where, orderBy: { createdAt: "desc" }, include: { sessions: { include: { session: true } }, recipients: true } }),
+    prisma.telegramCampaign.findMany({ where, orderBy: { createdAt: "desc" }, include: { sessions: { include: { session: true } }, recipients: { include: { session: { select: { label: true, username: true, phone: true } } } } } }),
     prisma.telegramAccountSettingsBatch.findMany({ where, orderBy: { createdAt: "desc" }, include: { jobs: { include: { session: true } } } }),
     prisma.aiCampaign.findMany({ where, orderBy: { createdAt: "desc" }, include: { sessions: { include: { session: true } }, memories: true, jobs: true, responseLogs: true } }),
   ]);
@@ -64,8 +64,8 @@ export async function GET(request: Request) {
     campaigns.flatMap((run) => run.sessions.map((entry) => [run.id, entry.sessionId, entry.session.label, entry.session.username, entry.session.phone, entry.status, entry.assignedCount, entry.sentCount, entry.failedCount, entry.lastErrorCode, entry.lastErrorMessage])),
   )));
   zip.addFile("telegram_recipients.csv", Buffer.from(csvFile(
-    ["campaign_id", "recipient_id", "target", "username", "telegram_id", "display_name", "status", "attempts", "session_id", "message_id", "sent_at", "error_code", "error_message", "replied", "replied_at", "reply_message_id", "reply_preview"],
-    campaigns.flatMap((run) => run.recipients.map((item) => [run.id, item.id, item.targetInput, item.username, item.telegramId, item.displayName, item.status, item.attempts, item.sessionId, item.messageId, item.sentAt?.toISOString(), item.errorCode, item.errorMessage, item.replied, item.repliedAt?.toISOString(), item.replyMessageId, item.replyPreview])),
+    ["campaign_id", "recipient_id", "target", "username", "telegram_id", "display_name", "status", "attempts", "session_id", "session_label", "session_username", "session_phone", "message_id", "sent_at", "error_code", "error_message", "replied", "replied_at", "reply_message_id", "reply_preview", "last_reply_check_at"],
+    campaigns.flatMap((run) => run.recipients.map((item) => [run.id, item.id, item.targetInput, item.username, item.telegramId, item.displayName, item.status, item.attempts, item.sessionId, item.session?.label, item.session?.username, item.session?.phone, item.messageId, item.sentAt?.toISOString(), item.errorCode, item.errorMessage, item.replied, item.repliedAt?.toISOString(), item.replyMessageId, item.replyPreview, item.lastCheckedAt?.toISOString()])),
   )));
   zip.addFile("account_operations.csv", Buffer.from(csvFile(
     ["batch_id", "kind", "status", "total", "processed", "succeeded", "failed", "skipped", "cancel_requested", "created_at", "started_at", "finished_at", "error", "metadata_json"],
