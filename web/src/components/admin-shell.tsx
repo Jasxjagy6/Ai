@@ -4,8 +4,17 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  CreditCard, LayoutDashboard, Menu, Settings, Sparkles, Users, Wand2, X,
-  BarChart3, KeyRound, MessagesSquare, Newspaper, BadgeDollarSign,
+  CreditCard,
+  LayoutDashboard,
+  Menu,
+  Settings,
+  Sparkles,
+  Users,
+  Wand2,
+  X,
+  BarChart3,
+  MessagesSquare,
+  Newspaper,
 } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { AriaAvatar } from "@/components/aria-avatar";
@@ -13,10 +22,12 @@ import { AriaAvatar } from "@/components/aria-avatar";
 const NAV = [
   { href: "/admin", label: "Dashboard", icon: LayoutDashboard },
   { href: "/admin/analytics", label: "Analytics", icon: BarChart3 },
-  { href: "/admin/conversations", label: "Conversations", icon: MessagesSquare },
+  {
+    href: "/admin/conversations",
+    label: "Conversations",
+    icon: MessagesSquare,
+  },
   { href: "/admin/users", label: "Users", icon: Users },
-  { href: "/admin/validator-keys", label: "Validator Keys", icon: KeyRound },
-  { href: "/admin/validator-plans", label: "Validator Plans", icon: BadgeDollarSign },
   { href: "/admin/personas", label: "Personas", icon: Sparkles },
   { href: "/admin/plans", label: "Plans & Billing", icon: CreditCard },
   { href: "/admin/changelog", label: "Changelog", icon: Newspaper },
@@ -49,7 +60,9 @@ export function AdminShell({
     <>
       <Link href="/" className="flex items-center gap-2 p-5">
         <AriaAvatar size={30} />
-        <span className="font-display text-[17px] font-bold tracking-tight">aria</span>
+        <span className="font-display text-[17px] font-bold tracking-tight">
+          aria
+        </span>
         <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-[10px] font-bold text-accent-strong">
           ADMIN
         </span>
@@ -74,7 +87,9 @@ export function AdminShell({
         })}
       </nav>
       <div className="flex items-center justify-between gap-2 border-t border-border p-4">
-        <span className="truncate text-xs text-text-secondary">{adminEmail}</span>
+        <span className="truncate text-xs text-text-secondary">
+          {adminEmail}
+        </span>
         <ThemeToggle />
       </div>
     </>
@@ -90,7 +105,10 @@ export function AdminShell({
       {/* Mobile drawer */}
       {open && (
         <div className="fixed inset-0 z-50 lg:hidden">
-          <div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} />
+          <div
+            className="absolute inset-0 bg-black/40"
+            onClick={() => setOpen(false)}
+          />
           <aside className="absolute inset-y-0 left-0 flex w-72 max-w-[85vw] flex-col border-r border-border bg-bg-soft">
             <button
               onClick={() => setOpen(false)}

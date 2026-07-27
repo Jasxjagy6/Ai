@@ -1,8 +1,12 @@
 #!/bin/sh
 set -e
 
-npx prisma migrate deploy
+if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
+  npx prisma migrate deploy
+fi
 
-npx tsx prisma/seed.ts 2>/dev/null || echo "Seed skipped (already seeded or unavailable)"
+if [ "${RUN_SEED:-true}" = "true" ]; then
+  npx tsx prisma/seed.ts 2>/dev/null || echo "Seed skipped (already seeded or unavailable)"
+fi
 
 exec "$@"

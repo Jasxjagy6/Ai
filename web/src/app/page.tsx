@@ -1,7 +1,17 @@
+import type { Metadata } from "next";
 import Link from "next/link";
 import {
-  ArrowRight, Brain, Code2, MessageCircle, ShieldCheck, Sparkles, Star,
-  Mic, Eye, Languages, Quote,
+  ArrowRight,
+  Brain,
+  Code2,
+  MessageCircle,
+  ShieldCheck,
+  Sparkles,
+  Star,
+  Mic,
+  Eye,
+  Languages,
+  Quote,
 } from "lucide-react";
 import { Navbar } from "@/components/navbar";
 import { AriaAvatar } from "@/components/aria-avatar";
@@ -10,6 +20,8 @@ import { getPlans, getTrialConfig } from "@/lib/plans";
 import { PricingCards } from "@/components/pricing-cards";
 import { NewsletterSignup } from "@/components/newsletter-signup";
 import { auth } from "@/lib/auth";
+import { SignalDeskLanding } from "@/components/validator/signal-desk-landing";
+import { getValidatorPlans, VALIDATOR_PLAN_CODES } from "@/lib/validator-plans";
 
 const COMPANIONS = [
   {
@@ -70,17 +82,20 @@ const PILLARS = [
 
 const TESTIMONIALS = [
   {
-    quote: "The voice notes genuinely caught me off guard. It stopped feeling like texting a bot and started feeling like someone was actually there.",
+    quote:
+      "The voice notes genuinely caught me off guard. It stopped feeling like texting a bot and started feeling like someone was actually there.",
     name: "Jordan",
     detail: "Plus member",
   },
   {
-    quote: "I sent a photo of my terrible cooking and she roasted me for a solid five minutes. Best part of my day, honestly.",
+    quote:
+      "I sent a photo of my terrible cooking and she roasted me for a solid five minutes. Best part of my day, honestly.",
     name: "Priya",
     detail: "Pro member",
   },
   {
-    quote: "I switched her to Spanish to practice and she just… kept up. Patient, funny, never made me feel dumb.",
+    quote:
+      "I switched her to Spanish to practice and she just… kept up. Patient, funny, never made me feel dumb.",
     name: "Marco",
     detail: "Plus member",
   },
@@ -113,8 +128,36 @@ const FAQ = [
   },
 ];
 
+export async function generateMetadata(): Promise<Metadata> {
+  return process.env.VALIDATOR_STANDALONE === "true"
+    ? {
+        title: "Signal Desk | Telegram Intelligence Workspace",
+        description:
+          "Validate Telegram data, operate account fleets, and manage durable outreach from one credit-based workspace.",
+      }
+    : {
+        title: "Aria | Your AI Companion",
+        description:
+          "Autonomous, human-like AI conversations at scale with complete API control.",
+      };
+}
+
 export default async function Home() {
-  const [plans, trial, session] = await Promise.all([getPlans(), getTrialConfig(), auth()]);
+  if (process.env.VALIDATOR_STANDALONE === "true") {
+    const validatorPlans = await getValidatorPlans();
+    return (
+      <SignalDeskLanding
+        plans={VALIDATOR_PLAN_CODES.map((code) => validatorPlans[code]).filter(
+          (plan) => plan.enabled,
+        )}
+      />
+    );
+  }
+  const [plans, trial, session] = await Promise.all([
+    getPlans(),
+    getTrialConfig(),
+    auth(),
+  ]);
 
   return (
     <div className="min-h-dvh">
@@ -125,23 +168,36 @@ export default async function Home() {
         <div className="glow absolute inset-0 pointer-events-none" />
         <div className="relative mx-auto grid max-w-6xl items-center gap-12 px-4 pb-16 pt-12 sm:pt-20 lg:grid-cols-[1.05fr_0.95fr] lg:gap-16 lg:pb-28 lg:pt-24">
           <div className="animate-slide-up">
-            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated px-3.5 py-1 text-xs font-medium text-text-secondary mb-5 animate-fade-in" style={{ animationDelay: "0.1s" }}>
+            <div
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-bg-elevated px-3.5 py-1 text-xs font-medium text-text-secondary mb-5 animate-fade-in"
+              style={{ animationDelay: "0.1s" }}
+            >
               <Sparkles size={12} className="text-accent" />
               Autonomous AI conversations, built to convert
             </div>
-            <h1 className="font-display text-[2.2rem] font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.5rem] animate-slide-up" style={{ animationDelay: "0.15s" }}>
+            <h1
+              className="font-display text-[2.2rem] font-bold leading-[1.08] tracking-tight sm:text-5xl lg:text-[3.5rem] animate-slide-up"
+              style={{ animationDelay: "0.15s" }}
+            >
               AI conversations
               <br />
-              that{' '}
+              that{" "}
               <span className="bg-gradient-to-r from-accent to-accent-warm bg-clip-text text-transparent">
                 convert.
               </span>
             </h1>
-            <p className="mt-5 max-w-md text-[15px] leading-relaxed text-text-secondary animate-slide-up" style={{ animationDelay: "0.2s" }}>
-              Fully autonomous, human-like AI chat at scale with complete API control.
-              Build natural conversations that remember context, respond instantly, and stay on-brand.
+            <p
+              className="mt-5 max-w-md text-[15px] leading-relaxed text-text-secondary animate-slide-up"
+              style={{ animationDelay: "0.2s" }}
+            >
+              Fully autonomous, human-like AI chat at scale with complete API
+              control. Build natural conversations that remember context,
+              respond instantly, and stay on-brand.
             </p>
-            <div className="mt-8 flex flex-wrap items-center gap-3 animate-slide-up" style={{ animationDelay: "0.25s" }}>
+            <div
+              className="mt-8 flex flex-wrap items-center gap-3 animate-slide-up"
+              style={{ animationDelay: "0.25s" }}
+            >
               <Link
                 href="/register"
                 className="inline-flex items-center gap-2 rounded-xl bg-accent-strong px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-accent/25 transition-all duration-200 hover:opacity-90 hover:scale-105 active:scale-95"
@@ -155,9 +211,13 @@ export default async function Home() {
                 Explore the API
               </Link>
             </div>
-            <div className="mt-8 flex items-center gap-5 text-[13px] text-text-secondary animate-fade-in" style={{ animationDelay: "0.35s" }}>
+            <div
+              className="mt-8 flex items-center gap-5 text-[13px] text-text-secondary animate-fade-in"
+              style={{ animationDelay: "0.35s" }}
+            >
               <span className="flex items-center gap-1.5">
-                <Star size={12} className="text-accent" fill="currentColor" /> API ready
+                <Star size={12} className="text-accent" fill="currentColor" />{" "}
+                API ready
               </span>
               <span className="h-1 w-1 rounded-full bg-border" />
               <span>Full control</span>
@@ -181,7 +241,8 @@ export default async function Home() {
             Not a chatbot. A companion.
           </h2>
           <p className="mt-3 text-sm text-text-secondary">
-            Built from the ground up to be someone you actually want to talk to — not a tool, not a toy.
+            Built from the ground up to be someone you actually want to talk to
+            — not a tool, not a toy.
           </p>
         </div>
         <div className="mt-12 grid gap-px overflow-hidden rounded-2xl border border-border bg-border sm:grid-cols-2">
@@ -189,18 +250,27 @@ export default async function Home() {
             <div
               key={p.title}
               className="bg-bg-elevated p-7 sm:p-9 transition-all duration-300 hover:bg-bg-soft"
-              style={{ animation: `slide-up 0.4s ease-out ${0.1 + i * 0.1}s both` }}
+              style={{
+                animation: `slide-up 0.4s ease-out ${0.1 + i * 0.1}s both`,
+              }}
             >
               <p.icon size={20} className="text-accent" />
-              <h3 className="mt-4 font-display text-[17px] font-semibold tracking-tight">{p.title}</h3>
-              <p className="mt-2 text-sm leading-relaxed text-text-secondary">{p.body}</p>
+              <h3 className="mt-4 font-display text-[17px] font-semibold tracking-tight">
+                {p.title}
+              </h3>
+              <p className="mt-2 text-sm leading-relaxed text-text-secondary">
+                {p.body}
+              </p>
             </div>
           ))}
         </div>
       </section>
 
       {/* ── Companions ───────────────────────────────────────── */}
-      <section id="companions" className="dotgrid border-y border-border bg-bg-soft">
+      <section
+        id="companions"
+        className="dotgrid border-y border-border bg-bg-soft"
+      >
         <div className="mx-auto max-w-6xl px-4 py-20 lg:py-28">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -212,7 +282,8 @@ export default async function Home() {
               </h2>
             </div>
             <p className="max-w-xs text-sm text-text-secondary">
-              Three distinct personalities, one thing in common: they remember you.
+              Three distinct personalities, one thing in common: they remember
+              you.
             </p>
           </div>
           <div className="mt-12 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -220,7 +291,9 @@ export default async function Home() {
               <div
                 key={c.name}
                 className="group flex flex-col rounded-2xl border border-border bg-bg-elevated p-6 transition-all duration-300 hover:border-accent/40 hover:shadow-lg hover:shadow-accent/5 hover:-translate-y-1"
-                style={{ animation: `slide-up 0.4s ease-out ${0.1 + i * 0.15}s both` }}
+                style={{
+                  animation: `slide-up 0.4s ease-out ${0.1 + i * 0.15}s both`,
+                }}
               >
                 <div className="flex items-center gap-3">
                   <AriaAvatar size={44} online />
@@ -242,7 +315,10 @@ export default async function Home() {
                   className="mt-6 inline-flex items-center gap-1.5 text-sm font-semibold text-accent transition-all duration-200 hover:gap-3 hover:text-accent-strong"
                 >
                   Chat with {c.name}
-                  <ArrowRight size={14} className="transition-all duration-200 group-hover:translate-x-1" />
+                  <ArrowRight
+                    size={14}
+                    className="transition-all duration-200 group-hover:translate-x-1"
+                  />
                 </Link>
               </div>
             ))}
@@ -262,8 +338,9 @@ export default async function Home() {
               The same AI, in your product
             </h2>
             <p className="mt-4 max-w-md text-sm leading-relaxed text-text-secondary">
-              OpenAI-compatible chat API with streaming and custom personas. Point your existing
-              SDK at our base URL and ship a companion feature this afternoon.
+              OpenAI-compatible chat API with streaming and custom personas.
+              Point your existing SDK at our base URL and ship a companion
+              feature this afternoon.
             </p>
             <div className="mt-7 flex flex-wrap gap-3">
               <Link
@@ -285,10 +362,12 @@ export default async function Home() {
               <span className="h-2.5 w-2.5 rounded-full bg-[#ff5f57]" />
               <span className="h-2.5 w-2.5 rounded-full bg-[#febc2e]" />
               <span className="h-2.5 w-2.5 rounded-full bg-[#28c840]" />
-              <span className="ml-2 text-[11px] text-text-secondary">companion.py</span>
+              <span className="ml-2 text-[11px] text-text-secondary">
+                companion.py
+              </span>
             </div>
             <pre className="overflow-x-auto p-5 text-[12px] leading-relaxed text-[#c8c0d8]">
-{`client = OpenAI(
+              {`client = OpenAI(
     base_url="https://aria.chat/api/v1",
     api_key="aria_sk_...",
 )
@@ -317,7 +396,8 @@ reply = client.chat.completions.create(
             </h2>
             {trial.days > 0 && (
               <p className="mx-auto mt-4 w-fit rounded-lg bg-accent-soft px-4 py-1.5 text-xs font-semibold text-accent">
-                New accounts get {trial.days} days of {plans[trial.tier].name} free
+                New accounts get {trial.days} days of {plans[trial.tier].name}{" "}
+                free
               </p>
             )}
           </div>
@@ -331,7 +411,9 @@ reply = client.chat.completions.create(
       <section className="border-t border-border bg-bg-soft">
         <div className="mx-auto max-w-6xl px-4 py-20 lg:py-28">
           <div className="mx-auto max-w-md text-center animate-slide-up">
-            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-accent">Loved by thousands</p>
+            <p className="text-xs font-semibold uppercase tracking-[0.15em] text-accent">
+              Loved by thousands
+            </p>
             <h2 className="mt-3 font-display text-2xl font-bold tracking-tight sm:text-3xl">
               People actually look forward to this
             </h2>
@@ -341,19 +423,30 @@ reply = client.chat.completions.create(
               <div
                 key={t.name}
                 className="flex flex-col rounded-2xl border border-border bg-bg-elevated p-6"
-                style={{ animation: `slide-up 0.4s ease-out ${0.1 + i * 0.1}s both` }}
+                style={{
+                  animation: `slide-up 0.4s ease-out ${0.1 + i * 0.1}s both`,
+                }}
               >
                 <Quote size={20} className="text-accent" />
-                <p className="mt-4 flex-1 text-sm leading-relaxed text-text-secondary">&ldquo;{t.quote}&rdquo;</p>
+                <p className="mt-4 flex-1 text-sm leading-relaxed text-text-secondary">
+                  &ldquo;{t.quote}&rdquo;
+                </p>
                 <div className="mt-5 flex items-center gap-3">
                   <AriaAvatar size={32} />
                   <div>
-                    <p className="text-sm font-semibold leading-tight">{t.name}</p>
+                    <p className="text-sm font-semibold leading-tight">
+                      {t.name}
+                    </p>
                     <p className="text-xs text-text-secondary">{t.detail}</p>
                   </div>
                   <div className="ml-auto flex gap-0.5">
                     {Array.from({ length: 5 }).map((_, j) => (
-                      <Star key={j} size={12} className="text-accent" fill="currentColor" />
+                      <Star
+                        key={j}
+                        size={12}
+                        className="text-accent"
+                        fill="currentColor"
+                      />
                     ))}
                   </div>
                 </div>
@@ -373,13 +466,19 @@ reply = client.chat.completions.create(
             <details
               key={item.q}
               className="group p-5 transition-all duration-200 hover:bg-bg-soft"
-              style={{ animation: `slide-up 0.3s ease-out ${0.1 + i * 0.08}s both` }}
+              style={{
+                animation: `slide-up 0.3s ease-out ${0.1 + i * 0.08}s both`,
+              }}
             >
               <summary className="flex cursor-pointer list-none items-center justify-between text-sm font-semibold">
                 {item.q}
-                <span className="ml-4 text-text-secondary text-lg transition-all duration-300 group-open:rotate-45 leading-none">+</span>
+                <span className="ml-4 text-text-secondary text-lg transition-all duration-300 group-open:rotate-45 leading-none">
+                  +
+                </span>
               </summary>
-              <p className="mt-3 text-sm leading-relaxed text-text-secondary">{item.a}</p>
+              <p className="mt-3 text-sm leading-relaxed text-text-secondary">
+                {item.a}
+              </p>
             </details>
           ))}
         </div>
@@ -403,7 +502,9 @@ reply = client.chat.completions.create(
             Start chatting free <ArrowRight size={15} />
           </Link>
           <div className="mt-10 w-full max-w-sm">
-            <p className="mb-2.5 text-xs text-text-secondary">Or get notified about new features & companions</p>
+            <p className="mb-2.5 text-xs text-text-secondary">
+              Or get notified about new features & companions
+            </p>
             <NewsletterSignup />
           </div>
         </div>
@@ -416,43 +517,131 @@ reply = client.chat.completions.create(
             <div className="max-w-xs">
               <div className="flex items-center gap-2">
                 <AriaAvatar size={26} />
-                <span className="font-display text-[15px] font-bold tracking-tight">aria</span>
+                <span className="font-display text-[15px] font-bold tracking-tight">
+                  aria
+                </span>
               </div>
               <p className="mt-3 text-[12px] leading-relaxed text-text-secondary">
-                Aria is an artificial intelligence, not a human. Conversations are AI-generated.
-                Not a substitute for professional mental-health support.
+                Aria is an artificial intelligence, not a human. Conversations
+                are AI-generated. Not a substitute for professional
+                mental-health support.
               </p>
             </div>
             <div className="grid grid-cols-2 gap-10 text-[13px] sm:grid-cols-4">
               <div>
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">Product</p>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Product
+                </p>
                 <ul className="space-y-2.5">
-                  <li><Link href="/chat" className="text-text-secondary hover:text-text transition-all duration-200">Chat</Link></li>
-                  <li><Link href="/pricing" className="text-text-secondary hover:text-text transition-all duration-200">Pricing</Link></li>
-                  <li><Link href="/changelog" className="text-text-secondary hover:text-text transition-all duration-200">What&apos;s new</Link></li>
-                  <li><Link href="/account" className="text-text-secondary hover:text-text transition-all duration-200">Account</Link></li>
+                  <li>
+                    <Link
+                      href="/chat"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Chat
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/pricing"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Pricing
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/changelog"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      What&apos;s new
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/account"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Account
+                    </Link>
+                  </li>
                 </ul>
               </div>
               <div>
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">Developers</p>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Developers
+                </p>
                 <ul className="space-y-2.5">
-                  <li><Link href="/docs" className="text-text-secondary hover:text-text transition-all duration-200">API docs</Link></li>
-                  <li><Link href="/developers" className="text-text-secondary hover:text-text transition-all duration-200">Dashboard</Link></li>
+                  <li>
+                    <Link
+                      href="/docs"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      API docs
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/developers"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Dashboard
+                    </Link>
+                  </li>
                 </ul>
               </div>
               <div>
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">Company</p>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Company
+                </p>
                 <ul className="space-y-2.5">
-                  <li><Link href="/register" className="text-text-secondary hover:text-text transition-all duration-200">Sign up</Link></li>
-                  <li><Link href="/login" className="text-text-secondary hover:text-text transition-all duration-200">Log in</Link></li>
+                  <li>
+                    <Link
+                      href="/register"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Sign up
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/login"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Log in
+                    </Link>
+                  </li>
                 </ul>
               </div>
               <div>
-                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">Legal</p>
+                <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-text-secondary">
+                  Legal
+                </p>
                 <ul className="space-y-2.5">
-                  <li><Link href="/terms" className="text-text-secondary hover:text-text transition-all duration-200">Terms</Link></li>
-                  <li><Link href="/privacy-policy" className="text-text-secondary hover:text-text transition-all duration-200">Privacy</Link></li>
-                  <li><Link href="/refund-policy" className="text-text-secondary hover:text-text transition-all duration-200">Refunds</Link></li>
+                  <li>
+                    <Link
+                      href="/terms"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Terms
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/privacy-policy"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Privacy
+                    </Link>
+                  </li>
+                  <li>
+                    <Link
+                      href="/refund-policy"
+                      className="text-text-secondary hover:text-text transition-all duration-200"
+                    >
+                      Refunds
+                    </Link>
+                  </li>
                 </ul>
               </div>
             </div>

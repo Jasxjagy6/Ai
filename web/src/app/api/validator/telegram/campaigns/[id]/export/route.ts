@@ -1,4 +1,4 @@
-import { requireMessagingAccount } from "@/lib/validator-auth";
+import { requireSignalDeskAccount } from "@/lib/validator-auth";
 import { messagingUnauthorized } from "@/lib/validator-api";
 import { prisma } from "@/lib/prisma";
 
@@ -6,7 +6,7 @@ type Context = { params: Promise<{ id: string }> };
 const csv = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
 
 export async function GET(_request: Request, { params }: Context) {
-  const account = await requireMessagingAccount();
+  const account = await requireSignalDeskAccount();
   if (!account) return messagingUnauthorized();
   const id = (await params).id;
   const campaign = await prisma.telegramCampaign.findFirst({ where: { id, accountId: account.id }, select: { name: true } });
@@ -16,8 +16,8 @@ export async function GET(_request: Request, { params }: Context) {
     include: { session: { select: { label: true, username: true, phone: true } } },
   });
   const rows = [
-    ["target", "username", "telegram_id", "display_name", "status", "attempts", "session", "session_username", "message_id", "sent_at", "error_code", "error_message", "replied", "replied_at", "reply_message_id", "reply_preview"],
-    ...recipients.map((item) => [item.targetInput, item.username, item.telegramId, item.displayName, item.status, item.attempts, item.session?.label, item.session?.username || item.session?.phone, item.messageId, item.sentAt?.toISOString(), item.errorCode, item.errorMessage, item.replied, item.repliedAt?.toISOString(), item.replyMessageId, item.replyPreview]),
+    ["target", "username", "telegram_id", "display_name", "status", "attempts", "session_id", "session", "session_username", "session_phone", "message_id", "sent_at", "error_code", "error_message", "replied", "replied_at", "reply_message_id", "reply_preview", "last_reply_check_at"],
+    ...recipients.map((item) => [item.targetInput, item.username, item.telegramId, item.displayName, item.status, item.attempts, item.sessionId, item.session?.label, item.session?.username, item.session?.phone, item.messageId, item.sentAt?.toISOString(), item.errorCode, item.errorMessage, item.replied, item.repliedAt?.toISOString(), item.replyMessageId, item.replyPreview, item.lastCheckedAt?.toISOString()]),
   ];
   const body = rows.map((row) => row.map(csv).join(",")).join("\r\n");
   const filename = campaign.name.replace(/[^a-z0-9_-]+/gi, "_").slice(0, 80) || "campaign";

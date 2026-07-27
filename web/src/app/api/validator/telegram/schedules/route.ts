@@ -5,6 +5,7 @@ import { requireMessagingAccount } from "@/lib/validator-auth";
 import { messagingUnauthorized } from "@/lib/validator-api";
 import { telegramCampaignCandidate } from "@/lib/telegram-campaigns";
 import { telegramSessionSafety } from "@/lib/telegram-control";
+import { runChargedValidatorTask } from "@/lib/validator-credits";
 
 const schema = z.object({
   name: z.string().trim().min(1).max(160),
@@ -107,13 +108,14 @@ export async function POST(request: Request) {
       { error: "Select only active Telegram sessions" },
       { status: 400 },
     );
-  if (
-    !sessions.some((session) => telegramSessionSafety(session).massDmEligible)
-  ) {
+  const blockedSessions = sessions
+    .map((session) => ({ session, safety: telegramSessionSafety(session) }))
+    .filter((item) => !item.safety.massDmEligible);
+  if (blockedSessions.length) {
+    const first = blockedSessions[0];
     return NextResponse.json(
       {
-        error:
-          "No selected sessions pass spam, health, and warmup safety checks",
+        error: `${first.session.label}: ${first.safety.eligibilityReason}${blockedSessions.length > 1 ? ` (${blockedSessions.length} selected sessions blocked)` : ""}`,
         code: "NO_MASS_DM_ELIGIBLE_SESSIONS",
       },
       { status: 423 },
@@ -123,12 +125,17 @@ export async function POST(request: Request) {
   if (data.sourceListId) {
     const list = await prisma.contactList.findFirst({
       where: { id: data.sourceListId, accountId: account.id },
-      select: { id: true, itemsCount: true },
+      select: { id: true, type: true, itemsCount: true },
     });
     if (!list)
       return NextResponse.json(
         { error: "Source list not found" },
         { status: 404 },
+      );
+    if (!["users", "merged"].includes(list.type))
+      return NextResponse.json(
+        { error: "User schedules require a Users or Merged source list" },
+        { status: 400 },
       );
     if (list.itemsCount > 200_000)
       return NextResponse.json(
@@ -169,22 +176,33 @@ export async function POST(request: Request) {
       { error: "Every-account DM schedules are limited to 50 targets" },
       { status: 400 },
     );
-  const schedule = await prisma.telegramMessageSchedule.create({
-    data: {
+  const schedule = await runChargedValidatorTask(
+    {
       accountId: account.id,
       accessKeyId: account.accessKeyId,
-      sourceListId: data.sourceListId || null,
-      name: data.name,
-      targetType: data.targetType,
-      mode: data.mode,
-      message: data.message,
-      parseMode: data.parseMode,
-      sessionIds,
-      manualTargets: data.manualTargets,
-      configuration: data.configuration,
-      intervalMinutes: data.intervalMinutes,
-      nextRunAt: data.nextRunAt,
+      taskCode: "schedule_create",
+      items: targetKeys.size,
+      sessions: sessionIds.length,
+      description: `Create ${data.name} recurring schedule`,
     },
-  });
+    () =>
+      prisma.telegramMessageSchedule.create({
+        data: {
+          accountId: account.id,
+          accessKeyId: account.accessKeyId,
+          sourceListId: data.sourceListId || null,
+          name: data.name,
+          targetType: data.targetType,
+          mode: data.mode,
+          message: data.message,
+          parseMode: data.parseMode,
+          sessionIds,
+          manualTargets: data.manualTargets,
+          configuration: data.configuration,
+          intervalMinutes: data.intervalMinutes,
+          nextRunAt: data.nextRunAt,
+        },
+      }),
+  );
   return NextResponse.json({ schedule }, { status: 201 });
 }
