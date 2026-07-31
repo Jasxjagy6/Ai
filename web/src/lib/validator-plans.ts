@@ -1,14 +1,13 @@
 import { getSetting, setSetting } from "@/lib/settings";
 
-export type ValidatorPlanCode = "basic" | "pro" | "vip" | "enterprise";
+export type ValidatorPlanCode = "week" | "month" | "six_months" | "year";
 
 export type ValidatorPlan = {
   code: ValidatorPlanCode;
   name: string;
   tagline: string;
   priceUsdCents: number;
-  durationDays: number | null;
-  creditsIncluded: number;
+  durationDays: number;
   validatorAccess: boolean;
   messagingAccess: boolean;
   aiChatAccess: boolean;
@@ -20,31 +19,29 @@ export type ValidatorPlan = {
 };
 
 export const VALIDATOR_PLAN_CODES: ValidatorPlanCode[] = [
-  "basic",
-  "pro",
-  "vip",
-  "enterprise",
+  "week",
+  "month",
+  "six_months",
+  "year",
 ];
 
-function fullAccessFeatures(credits: number) {
+function fullAccessFeatures() {
   return [
-    `${credits.toLocaleString()} workspace credits`,
     "Every Signal Desk feature",
     "Unlimited Telegram fleet size",
     "Validator, messaging, schedules, reports, account tools, and AI Chatter",
-    "Operations use credits only when they run",
+    "Unlimited usage while your subscription is active",
   ];
 }
 
 export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
   {
-    basic: {
-      code: "basic",
-      name: "Basic",
-      tagline: "A clean starting point for focused Telegram operations",
-      priceUsdCents: 1900,
-      durationDays: 30,
-      creditsIncluded: 2500,
+    week: {
+      code: "week",
+      name: "1 Week",
+      tagline: "Full access for a focused week of Telegram operations",
+      priceUsdCents: 799,
+      durationDays: 7,
       validatorAccess: true,
       messagingAccess: true,
       aiChatAccess: true,
@@ -52,15 +49,14 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       sessionLimit: null,
       enabled: true,
       featured: false,
-      features: fullAccessFeatures(2500),
+      features: fullAccessFeatures(),
     },
-    pro: {
-      code: "pro",
-      name: "Pro",
-      tagline: "Higher throughput for teams running every week",
-      priceUsdCents: 4900,
+    month: {
+      code: "month",
+      name: "1 Month",
+      tagline: "A complete month for continuous fleet operations",
+      priceUsdCents: 2499,
       durationDays: 30,
-      creditsIncluded: 10000,
       validatorAccess: true,
       messagingAccess: true,
       aiChatAccess: true,
@@ -68,15 +64,14 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       sessionLimit: null,
       enabled: true,
       featured: true,
-      features: fullAccessFeatures(10000),
+      features: fullAccessFeatures(),
     },
-    vip: {
-      code: "vip",
-      name: "VIP",
-      tagline: "Serious capacity with room for multiple fleets",
-      priceUsdCents: 9900,
-      durationDays: 30,
-      creditsIncluded: 30000,
+    six_months: {
+      code: "six_months",
+      name: "6 Months",
+      tagline: "Long-term access with a built-in multi-month discount",
+      priceUsdCents: 11999,
+      durationDays: 180,
       validatorAccess: true,
       messagingAccess: true,
       aiChatAccess: true,
@@ -84,15 +79,14 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       sessionLimit: null,
       enabled: true,
       featured: false,
-      features: fullAccessFeatures(30000),
+      features: fullAccessFeatures(),
     },
-    enterprise: {
-      code: "enterprise",
-      name: "Enterprise",
-      tagline: "Maximum scale for durable, multi-fleet operations",
-      priceUsdCents: 29900,
-      durationDays: 30,
-      creditsIncluded: 120000,
+    year: {
+      code: "year",
+      name: "1 Year",
+      tagline: "The best annual value for permanent operators",
+      priceUsdCents: 19999,
+      durationDays: 365,
       validatorAccess: true,
       messagingAccess: true,
       aiChatAccess: true,
@@ -100,7 +94,7 @@ export const DEFAULT_VALIDATOR_PLANS: Record<ValidatorPlanCode, ValidatorPlan> =
       sessionLimit: null,
       enabled: true,
       featured: false,
-      features: fullAccessFeatures(120000),
+      features: fullAccessFeatures(),
     },
   };
 
@@ -123,10 +117,8 @@ export async function getValidatorPlans() {
           aiChatAccess: true,
           aiCampaignLimit: null,
           sessionLimit: null,
-          features: fullAccessFeatures(
-            overrides[code]?.creditsIncluded ??
-              DEFAULT_VALIDATOR_PLANS[code].creditsIncluded,
-          ),
+          durationDays: DEFAULT_VALIDATOR_PLANS[code].durationDays,
+          features: fullAccessFeatures(),
         },
       ]),
     ) as Record<ValidatorPlanCode, ValidatorPlan>;
@@ -151,7 +143,8 @@ export async function saveValidatorPlans(
             aiChatAccess: true,
             aiCampaignLimit: null,
             sessionLimit: null,
-            features: fullAccessFeatures(plans[code].creditsIncluded),
+            durationDays: DEFAULT_VALIDATOR_PLANS[code].durationDays,
+            features: fullAccessFeatures(),
           },
         ]),
       ),

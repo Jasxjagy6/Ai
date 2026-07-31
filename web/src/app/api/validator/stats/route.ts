@@ -50,8 +50,7 @@ export async function GET(request: Request) {
     recentAccountJobs,
     aiCampaigns,
     dailyMessages,
-    dailyCredits,
-    creditTotals,
+    dailyUsage,
     activeSessions,
     cleanSessions,
   ] = await Promise.all([
@@ -127,16 +126,31 @@ export async function GET(request: Request) {
       FROM "TelegramCampaign" WHERE "accountId" = ${account.id} ${rawDates}
       GROUP BY DATE("createdAt") ORDER BY date ASC
     `),
-    prisma.$queryRaw<Array<{ date: Date; credits: bigint }>>(Prisma.sql`
-      SELECT DATE("createdAt") AS date, ABS(COALESCE(SUM(amount), 0))::int AS credits
-      FROM "ValidatorCreditTransaction"
-      WHERE "accountId" = ${account.id} AND amount < 0 ${rawDates}
-      GROUP BY DATE("createdAt") ORDER BY date ASC
+    prisma.$queryRaw<Array<{ date: Date; operations: bigint; volume: bigint }>>(Prisma.sql`
+      SELECT day AS date, SUM(operations)::int AS operations, SUM(volume)::bigint AS volume
+      FROM (
+        SELECT DATE("createdAt") AS day, COUNT(*) AS operations,
+          COALESCE(SUM("totalCount"), 0) AS volume
+        FROM "LinkFilterJob" WHERE "accountId" = ${account.id} ${rawDates}
+        GROUP BY DATE("createdAt")
+        UNION ALL
+        SELECT DATE("createdAt") AS day, COUNT(*) AS operations,
+          COALESCE(SUM("sentCount" + "repliedCount"), 0) AS volume
+        FROM "TelegramCampaign" WHERE "accountId" = ${account.id} ${rawDates}
+        GROUP BY DATE("createdAt")
+        UNION ALL
+        SELECT DATE("createdAt") AS day, COUNT(*) AS operations,
+          COALESCE(SUM("processedCount"), 0) AS volume
+        FROM "TelegramAccountSettingsBatch" WHERE "accountId" = ${account.id} ${rawDates}
+        GROUP BY DATE("createdAt")
+        UNION ALL
+        SELECT DATE("createdAt") AS day, COUNT(*) AS operations,
+          COALESCE(SUM("messagesReceived" + "messagesSent"), 0) AS volume
+        FROM "AiCampaign" WHERE "accountId" = ${account.id} ${rawDates}
+        GROUP BY DATE("createdAt")
+      ) activity
+      GROUP BY day ORDER BY day ASC
     `),
-    prisma.validatorCreditTransaction.aggregate({
-      where: { accountId: account.id, createdAt: dateFilter, amount: { lt: 0 } },
-      _sum: { amount: true },
-    }),
     prisma.telegramSession.count({ where: { accountId: account.id, status: "active", isLoggedIn: true } }),
     prisma.telegramSession.count({ where: { accountId: account.id, spamStatus: "clean" } }),
   ]);
@@ -163,7 +177,6 @@ export async function GET(request: Request) {
     }),
     { runs: 0, sent: 0, failed: 0, replied: 0, targets: 0 },
   );
-  const periodCreditsUsed = Math.abs(creditTotals._sum.amount || 0);
   const completedRuns =
     (jobStats.find((row) => row.status === "completed")?._count.id || 0) +
     (campaignStats.find((row) => row.status === "completed")?._count.id || 0) +
@@ -180,14 +193,14 @@ export async function GET(request: Request) {
     totalRequests,
     successRate,
     completedRuns,
-    credits: {
-      balance: account.creditsBalance,
-      purchased: account.creditsPurchased,
-      spent: periodCreditsUsed,
-      usagePercent: account.creditsPurchased
-        ? Math.min(100, Math.round((periodCreditsUsed / account.creditsPurchased) * 100))
-        : 0,
-      daily: dailyCredits.map((row) => ({ date: row.date.toISOString().slice(0, 10), credits: Number(row.credits) })),
+    usage: {
+      operations: dailyUsage.reduce((sum, row) => sum + Number(row.operations), 0),
+      volume: dailyUsage.reduce((sum, row) => sum + Number(row.volume), 0),
+      daily: dailyUsage.map((row) => ({
+        date: row.date.toISOString().slice(0, 10),
+        operations: Number(row.operations),
+        volume: Number(row.volume),
+      })),
     },
     byStatus: Object.fromEntries(jobStats.map((row) => [row.status, row._count.id])),
     lists: {

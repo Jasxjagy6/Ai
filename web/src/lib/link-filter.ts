@@ -2,10 +2,6 @@ import { Prisma } from "@prisma/client";
 import { ProxyAgent, request } from "undici";
 import { prisma } from "@/lib/prisma";
 import { ListError, normalizeUsername } from "@/lib/lists";
-import {
-  debitValidatorCredits,
-  quoteValidatorTask,
-} from "@/lib/validator-credits";
 
 const MAX_ITEMS = Math.max(
   1,
@@ -379,10 +375,6 @@ export async function startLinkFilterJob(
   const resultListName = (
     requestedName.trim() || `${source.name} - Valid Usernames`
   ).slice(0, 255);
-  const creditQuote = await quoteValidatorTask("validator_run", {
-    items: candidates.length,
-  });
-
   try {
     const job = await prisma.$transaction(
       async (transaction) => {
@@ -408,18 +400,8 @@ export async function startLinkFilterJob(
             duplicateCount,
             maxPasses: MAX_PASSES,
             useProxies,
-            creditsCharged: creditQuote.credits,
+            creditsCharged: 0,
           },
-        });
-        await debitValidatorCredits(transaction, {
-          accountId,
-          accessKeyId,
-          credits: creditQuote.credits,
-          taskCode: "validator_run",
-          description: `Validate ${candidates.length.toLocaleString()} usernames`,
-          referenceType: "validation_job",
-          referenceId: created.id,
-          metadata: { candidates: candidates.length, useProxies },
         });
         if (accessKeyId) {
           await transaction.validatorAccessKey.updateMany({

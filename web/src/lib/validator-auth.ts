@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "crypto";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { decryptTelegramData, encryptTelegramData } from "@/lib/telegram-crypto";
 
 async function isSecure() {
   const h = await headers();
@@ -20,7 +21,25 @@ function hash(value: string) {
 
 export function createValidatorAccessKey() {
   const raw = `tgv_${randomBytes(30).toString("base64url")}`;
-  return { raw, keyHash: hash(raw), prefix: `${raw.slice(0, 15)}...` };
+  return {
+    raw,
+    keyHash: hash(raw),
+    prefix: `${raw.slice(0, 15)}...`,
+    rawKeyEncrypted: encryptTelegramData(raw),
+  };
+}
+
+export function encryptValidatorAccessKey(raw: string) {
+  return encryptTelegramData(raw);
+}
+
+export function decryptValidatorAccessKey(value: string | null) {
+  if (!value) return null;
+  try {
+    return decryptTelegramData(value).toString("utf8");
+  } catch {
+    return null;
+  }
 }
 
 export async function ensureValidatorReferralCode(accountId: string) {
@@ -73,10 +92,11 @@ async function accountView(
 ) {
   const planCode = account.currentPlanCode || key?.planCode || null;
   const expiresAt = account.planExpiresAt || key?.expiresAt || null;
-  const expired = !!expiresAt && expiresAt <= new Date();
-  const reactivated =
-    !!account.lastCreditTopupAt &&
-    (!expiresAt || account.lastCreditTopupAt > expiresAt);
+  const now = new Date();
+  const subscriptionActive = !!expiresAt && expiresAt > now;
+  const daysRemaining = subscriptionActive
+    ? Math.max(1, Math.ceil((expiresAt.getTime() - now.getTime()) / 86_400_000))
+    : 0;
   return {
     id: account.id,
     email: account.email,
@@ -87,15 +107,17 @@ async function accountView(
     requestsUsed: key?.requestsUsed || 0,
     requestsRemaining: null,
     accessExpiresAt: expiresAt,
-    accessExpired: expired,
-    creditsActive: account.creditsBalance > 0 && (!expired || reactivated),
+    accessExpired: !subscriptionActive,
+    subscriptionActive,
+    subscriptionDaysRemaining: daysRemaining,
+    creditsActive: subscriptionActive,
     creditsBalance: account.creditsBalance,
     creditsPurchased: account.creditsPurchased,
     creditsSpent: account.creditsSpent,
     referralCode: account.referralCode,
-    validatorAccess: true,
-    messagingAccess: true,
-    aiChatAccess: true,
+    validatorAccess: subscriptionActive,
+    messagingAccess: subscriptionActive,
+    aiChatAccess: subscriptionActive,
     aiCampaignLimit: null,
     sessionLimit: null,
     messageLimit: null,
@@ -117,12 +139,10 @@ export async function createValidatorSessionForAccount(
   const key = accessKeyId
     ? await prisma.validatorAccessKey.findUnique({ where: { id: accessKeyId } })
     : null;
-  if (key?.expiresAt && key.expiresAt <= new Date()) return null;
   const normalExpiry = new Date(
     Date.now() + SESSION_DAYS * 24 * 60 * 60 * 1000,
   );
-  const expiresAt =
-    key?.expiresAt && key.expiresAt < normalExpiry ? key.expiresAt : normalExpiry;
+  const expiresAt = normalExpiry;
   await prisma.validatorSession.create({
     data: { accountId, accessKeyId, tokenHash: hash(token), expiresAt },
   });
@@ -146,12 +166,7 @@ export async function createValidatorSession(rawKey: string) {
     where: { keyHash: hash(rawKey.trim()) },
     include: { account: true },
   });
-  if (
-    !key ||
-    key.revoked ||
-    !key.account.active ||
-    (key.expiresAt && key.expiresAt <= now)
-  )
+  if (!key || key.revoked || !key.account.active)
     return null;
   await prisma.validatorAccessKey.update({
     where: { id: key.id },
@@ -160,7 +175,7 @@ export async function createValidatorSession(rawKey: string) {
   return createValidatorSessionForAccount(key.accountId, key.id);
 }
 
-export async function requireSignalDeskAccount() {
+export async function getSignalDeskAccount() {
   const token = (await cookies()).get(COOKIE_NAME)?.value;
   if (!token) return null;
   const session = await prisma.validatorSession.findUnique({
@@ -170,8 +185,7 @@ export async function requireSignalDeskAccount() {
   if (!session || session.expiresAt <= new Date() || !session.account.active)
     return null;
   if (
-    session.accessKey?.revoked ||
-    (session.accessKey?.expiresAt && session.accessKey.expiresAt <= new Date())
+    session.accessKey?.revoked
   ) {
     await prisma.validatorSession
       .delete({ where: { id: session.id } })
@@ -191,14 +205,19 @@ export async function requireSignalDeskAccount() {
   return accountView(account, session.accessKey);
 }
 
+export async function requireSignalDeskAccount() {
+  const account = await getSignalDeskAccount();
+  return account?.subscriptionActive ? account : null;
+}
+
 export async function requireValidatorAccount() {
   const account = await requireSignalDeskAccount();
-  return account?.validatorAccess ? account : null;
+  return account?.subscriptionActive && account.validatorAccess ? account : null;
 }
 
 export async function requireMessagingAccount() {
   const account = await requireSignalDeskAccount();
-  return account?.messagingAccess ? account : null;
+  return account?.subscriptionActive && account.messagingAccess ? account : null;
 }
 
 export async function clearValidatorSession() {

@@ -251,17 +251,10 @@ export async function quoteValidatorTask(
 ) {
   const settings = await getValidatorCreditSettings();
   const price = settings.tasks[taskCode];
-  if (!price.enabled) {
-    throw new ListError(
-      `${price.label} is currently unavailable`,
-      403,
-      "TASK_DISABLED",
-    );
-  }
   return {
     taskCode,
     price,
-    credits: calculateCreditCost(price, input),
+    credits: 0,
   };
 }
 
@@ -280,68 +273,25 @@ export async function debitValidatorCredits(
     metadata?: Prisma.InputJsonValue;
   },
 ) {
-  if (input.credits <= 0) return null;
   const access = await transaction.validatorAccount.findUnique({
     where: { id: input.accountId },
     select: {
       active: true,
-      creditsBalance: true,
       planExpiresAt: true,
-      lastCreditTopupAt: true,
     },
   });
   if (
-    access?.planExpiresAt &&
-    access.planExpiresAt <= new Date() &&
-    (!access.lastCreditTopupAt ||
-      access.lastCreditTopupAt <= access.planExpiresAt)
+    !access?.active ||
+    !access.planExpiresAt ||
+    access.planExpiresAt <= new Date()
   ) {
     throw new ListError(
-      "Your plan has expired. Add a credit top-up or renew a plan to resume paid tasks.",
+      "Your subscription has expired. Renew it to continue using Signal Desk.",
       402,
-      "CREDIT_REACTIVATION_REQUIRED",
+      "SUBSCRIPTION_REQUIRED",
     );
   }
-  const updated = await transaction.validatorAccount.updateMany({
-    where: {
-      id: input.accountId,
-      active: true,
-      creditsBalance: { gte: input.credits },
-    },
-    data: {
-      creditsBalance: { decrement: input.credits },
-      creditsSpent: { increment: input.credits },
-    },
-  });
-  if (!updated.count) {
-    const account = await transaction.validatorAccount.findUnique({
-      where: { id: input.accountId },
-      select: { creditsBalance: true },
-    });
-    throw new ListError(
-      `${input.description} needs ${input.credits.toLocaleString()} credits, but only ${(account?.creditsBalance || 0).toLocaleString()} are available`,
-      402,
-      "INSUFFICIENT_CREDITS",
-    );
-  }
-  const account = await transaction.validatorAccount.findUniqueOrThrow({
-    where: { id: input.accountId },
-    select: { creditsBalance: true },
-  });
-  return transaction.validatorCreditTransaction.create({
-    data: {
-      accountId: input.accountId,
-      accessKeyId: input.accessKeyId || null,
-      amount: -input.credits,
-      balanceAfter: account.creditsBalance,
-      kind: "debit",
-      taskCode: input.taskCode,
-      description: input.description,
-      referenceType: input.referenceType,
-      referenceId: input.referenceId,
-      metadata: input.metadata,
-    },
-  });
+  return null;
 }
 
 export async function chargeValidatorTask(input: {
@@ -378,7 +328,6 @@ export async function runChargedValidatorTask<T>(
   },
   operation: () => Promise<T>,
 ) {
-  const referenceId = crypto.randomUUID();
   const quote = await quoteValidatorTask(input.taskCode, input);
   await prisma.$transaction((transaction) =>
     debitValidatorCredits(transaction, {
@@ -386,27 +335,9 @@ export async function runChargedValidatorTask<T>(
       credits: quote.credits,
       description: input.description || quote.price.label,
       referenceType: "operation",
-      referenceId,
     }),
   );
-  try {
-    return await operation();
-  } catch (error) {
-    await prisma
-      .$transaction((transaction) =>
-        refundValidatorCredits(transaction, {
-          accountId: input.accountId,
-          accessKeyId: input.accessKeyId,
-          credits: quote.credits,
-          taskCode: input.taskCode,
-          description: `${input.description || quote.price.label} failed`,
-          referenceType: "operation",
-          referenceId,
-        }),
-      )
-      .catch(() => undefined);
-    throw error;
-  }
+  return operation();
 }
 
 export async function refundValidatorCredits(
@@ -422,27 +353,5 @@ export async function refundValidatorCredits(
     metadata?: Prisma.InputJsonValue;
   },
 ) {
-  if (input.credits <= 0) return null;
-  const account = await transaction.validatorAccount.update({
-    where: { id: input.accountId },
-    data: {
-      creditsBalance: { increment: input.credits },
-      creditsSpent: { decrement: input.credits },
-    },
-    select: { creditsBalance: true },
-  });
-  return transaction.validatorCreditTransaction.create({
-    data: {
-      accountId: input.accountId,
-      accessKeyId: input.accessKeyId || null,
-      amount: input.credits,
-      balanceAfter: account.creditsBalance,
-      kind: "refund",
-      taskCode: input.taskCode,
-      description: input.description,
-      referenceType: input.referenceType,
-      referenceId: input.referenceId,
-      metadata: input.metadata,
-    },
-  });
+  return null;
 }

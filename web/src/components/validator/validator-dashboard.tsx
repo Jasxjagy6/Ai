@@ -5,7 +5,7 @@ import {
   ArrowRight,
   CalendarDays,
   CheckCircle2,
-  Coins,
+  CalendarClock,
   LayoutDashboard,
   ListChecks,
   Loader2,
@@ -37,12 +37,10 @@ type StatsData = {
   completedRuns: number;
   byStatus: Record<string, number>;
   lists: { total: number; totalItems: number; byType: Record<string, number> };
-  credits: {
-    balance: number;
-    purchased: number;
-    spent: number;
-    usagePercent: number;
-    daily: Array<{ date: string; credits: number }>;
+  usage: {
+    operations: number;
+    volume: number;
+    daily: Array<{ date: string; operations: number; volume: number }>;
   };
   sessions: {
     total: number;
@@ -139,7 +137,7 @@ function SummaryCard({
   );
 }
 
-function CreditChart({ data, from, to, rangeLabel }: { data: StatsData["credits"]; from: string; to: string; rangeLabel: string }) {
+function UsageChart({ data, from, to, rangeLabel }: { data: StatsData["usage"]; from: string; to: string; rangeLabel: string }) {
   const start = new Date(from);
   const end = new Date(to);
   const totalDays = Math.max(1, Math.min(60, Math.ceil((end.getTime() - start.getTime()) / 86_400_000) + 1));
@@ -150,56 +148,46 @@ function CreditChart({ data, from, to, rangeLabel }: { data: StatsData["credits"
     const key = date.toISOString().slice(0, 10);
     return {
       date,
-      credits: data.daily.find((item) => item.date === key)?.credits || 0,
+      volume: data.daily.find((item) => item.date === key)?.volume || 0,
     };
   });
-  const max = Math.max(1, ...days.map((day) => day.credits));
+  const max = Math.max(1, ...days.map((day) => day.volume));
   const points = days
     .map((day, index) => {
       const x = (index / Math.max(1, days.length - 1)) * 100;
-      const y = 88 - (day.credits / max) * 70;
+      const y = 88 - (day.volume / max) * 70;
       return `${x},${y}`;
     })
     .join(" ");
   const ticks = [0, 0.25, 0.5, 0.75, 1].map((position) => days[Math.round((days.length - 1) * position)]);
-  const radius = 42;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - data.usagePercent / 100);
-
   return (
     <section className={`${CARD} min-w-0 p-4 sm:p-5`}>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-semibold">Credit Usage</h3>
+        <h3 className="text-sm font-semibold">Workspace Usage</h3>
         <span className="rounded-lg border border-white/[0.06] bg-[#151815] px-3 py-2 text-[9px] text-[#8a948f]">{rangeLabel}</span>
       </div>
       <div className="mt-5 flex items-center justify-between gap-4">
         <div>
-          <p className="text-[10px] text-[#79837f]">Credits used</p>
-          <p className="mt-1 font-mono text-2xl font-semibold">{data.spent.toLocaleString()}</p>
-          <p className="mt-1 text-[9px] text-[#69736f]">of {data.purchased.toLocaleString()}</p>
+          <p className="text-[10px] text-[#79837f]">Processed activity</p>
+          <p className="mt-1 font-mono text-2xl font-semibold">{data.volume.toLocaleString()}</p>
+          <p className="mt-1 text-[9px] text-[#69736f]">items, messages, and account actions</p>
         </div>
-        <div className="relative h-[92px] w-[92px] shrink-0">
-          <svg viewBox="0 0 100 100" className="h-full w-full -rotate-90">
-            <circle cx="50" cy="50" r={radius} fill="none" stroke="#2a2e2b" strokeWidth="7" />
-            <circle cx="50" cy="50" r={radius} fill="none" stroke="#8ee83c" strokeWidth="7" strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} />
-          </svg>
-          <span className="absolute inset-0 flex items-center justify-center font-mono text-lg font-semibold">{data.usagePercent}%</span>
-        </div>
+        <div className="rounded-xl border border-[#9cff38]/15 bg-[#9cff38]/[0.04] px-4 py-3 text-right"><p className="font-mono text-xl font-semibold text-[#9cff38]">{data.operations.toLocaleString()}</p><p className="text-[8px] uppercase tracking-wider text-[#69736f]">operations</p></div>
       </div>
       <div className="mt-4 h-[115px] sm:h-[135px]">
         <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-full w-full overflow-visible">
           <defs>
-            <linearGradient id="creditUsageFill" x1="0" y1="0" x2="0" y2="1">
+             <linearGradient id="workspaceUsageFill" x1="0" y1="0" x2="0" y2="1">
               <stop offset="0" stopColor="#9cff38" stopOpacity=".19" />
               <stop offset="1" stopColor="#9cff38" stopOpacity="0" />
             </linearGradient>
           </defs>
-          <polygon points={`0,100 ${points} 100,100`} fill="url(#creditUsageFill)" />
+          <polygon points={`0,100 ${points} 100,100`} fill="url(#workspaceUsageFill)" />
           <polyline points={points} fill="none" stroke="#8ee83c" strokeWidth="1.5" vectorEffect="non-scaling-stroke" />
           {days.map((day, index) => {
-            if (!day.credits) return null;
+            if (!day.volume) return null;
             const x = (index / Math.max(1, days.length - 1)) * 100;
-            const y = 88 - (day.credits / max) * 70;
+            const y = 88 - (day.volume / max) * 70;
             return <circle key={day.date.toISOString()} cx={x} cy={y} r="1.15" fill="#9cff38" stroke="#121512" strokeWidth=".7" vectorEffect="non-scaling-stroke" />;
           })}
         </svg>
@@ -256,7 +244,7 @@ export function ValidatorDashboard({
   account,
   onNavigate,
 }: {
-  account: { email: string; creditsBalance: number };
+  account: { email: string; subscriptionDaysRemaining: number; subscriptionActive: boolean };
   onNavigate: (destination: Destination) => void;
 }) {
   const [data, setData] = useState<StatsData | null>(null);
@@ -349,7 +337,7 @@ export function ValidatorDashboard({
       </div>
 
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="Total Credits" value={account.creditsBalance} sub="Available credits" icon={Coins} />
+        <SummaryCard label="Subscription" value={account.subscriptionActive ? `${account.subscriptionDaysRemaining} days` : "Expired"} sub="All features included" icon={CalendarClock} />
         <SummaryCard label="DMs Sent" value={data.sessions.messagesSent} sub="Across your accounts" icon={Send} trend={messageTrend} />
         <SummaryCard label="Runs Completed" value={data.completedRuns} sub="All workspace runs" icon={CheckCircle2} trend={`${data.successRate}% valid`} />
         <SummaryCard label="Active Workspaces" value={data.lists.total} sub={`${data.lists.totalItems.toLocaleString()} imported rows`} icon={LayoutDashboard} />
@@ -357,7 +345,7 @@ export function ValidatorDashboard({
 
       <div className="mt-4 grid gap-4 xl:grid-cols-[1.35fr_1fr]">
         <RecentRuns runs={data.recentActivity} openHistory={() => onNavigate("history")} inspect={inspectRun} />
-        <CreditChart data={data.credits} from={data.range.from} to={data.range.to} rangeLabel={rangeLabel} />
+        <UsageChart data={data.usage} from={data.range.from} to={data.range.to} rangeLabel={rangeLabel} />
       </div>
 
       <section className={`${CARD} mt-4 p-4 sm:p-5`}>

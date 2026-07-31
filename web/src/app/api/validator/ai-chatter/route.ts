@@ -98,7 +98,6 @@ export async function GET() {
   ]);
 
   return NextResponse.json({
-    creditsBalance: account.creditsBalance,
     campaignLimit: account.aiCampaignLimit,
     activeCampaigns: campaigns.filter((campaign) =>
       AI_CAMPAIGN_ACTIVE_STATUSES.includes(

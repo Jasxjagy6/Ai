@@ -1,19 +1,14 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
-import { requireSignalDeskAccount } from "@/lib/validator-auth";
+import { getSignalDeskAccount } from "@/lib/validator-auth";
 import { getValidatorCreditSettings } from "@/lib/validator-credits";
 import { unauthorized } from "@/lib/validator-api";
 
 export async function GET() {
-  const account = await requireSignalDeskAccount();
+  const account = await getSignalDeskAccount();
   if (!account) return unauthorized();
-  const [transactions, rewards, referrals, updates, creditSettings] =
+  const [rewards, referrals, updates, creditSettings] =
     await Promise.all([
-      prisma.validatorCreditTransaction.findMany({
-        where: { accountId: account.id },
-        orderBy: { createdAt: "desc" },
-        take: 100,
-      }),
       prisma.validatorAffiliateReward.findMany({
         where: { referrerId: account.id },
         orderBy: { createdAt: "desc" },
@@ -42,7 +37,6 @@ export async function GET() {
     ]);
   return NextResponse.json({
     account,
-    transactions,
     rewards: rewards.map((reward) => ({
       ...reward,
       referredAccount: {
@@ -54,6 +48,6 @@ export async function GET() {
     })),
     referrals,
     updates,
-    creditSettings,
+    affiliateRateBps: creditSettings.affiliateRateBps,
   });
 }

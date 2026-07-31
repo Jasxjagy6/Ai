@@ -41,7 +41,6 @@ type Run = {
   startedAt: string | null;
   finishedAt: string | null;
   error: string | null;
-  creditsUsed?: number;
   sessions?: number;
   logs?: number;
 };
@@ -143,7 +142,8 @@ const ACTIVE = new Set([
   "running",
   "processing",
   "starting",
-  "credit_grace",
+  "subscription_paused",
+  "paused_subscription",
 ]);
 
 async function request<T>(url: string): Promise<T> {
@@ -158,7 +158,7 @@ function statusColor(status: string) {
     return "text-[#9cff38] border-[#9cff38]/20 bg-[#9cff38]/[0.05]";
   if (ACTIVE.has(status))
     return "text-[#f7c948] border-[#f7c948]/20 bg-[#f7c948]/[0.05]";
-  if (["failed", "error", "grace_expired"].includes(status))
+  if (["failed", "error"].includes(status))
     return "text-[#ff7474] border-[#ff7474]/20 bg-[#ff7474]/[0.05]";
   return "text-[#8b9590] border-white/[0.07] bg-white/[0.025]";
 }
@@ -299,7 +299,7 @@ export function ValidatorReports({
       return false;
     if (
       status === "failed" &&
-      !["failed", "error", "grace_expired"].includes(run.status)
+      !["failed", "error"].includes(run.status)
     )
       return false;
     return (

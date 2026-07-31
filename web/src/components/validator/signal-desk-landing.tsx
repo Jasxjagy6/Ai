@@ -3,7 +3,7 @@ import {
   ArrowRight,
   BadgeDollarSign,
   Check,
-  Coins,
+  CalendarDays,
   Fingerprint,
   Gauge,
   Layers3,
@@ -100,8 +100,8 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
             </h1>
             <p className="mt-7 max-w-2xl text-base leading-8 text-[#81908c] sm:text-lg">
               A dedicated operating system for Telegram data, validation,
-              account fleets, and durable outreach. One credit balance. Every
-              action visible. No hidden limits.
+               account fleets, and durable outreach. One active subscription.
+               Every action visible. No hidden limits.
             </p>
             <div className="mt-9 flex flex-col gap-3 sm:flex-row">
               <Link
@@ -119,8 +119,8 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
             </div>
             <div className="mt-10 flex flex-wrap gap-x-7 gap-y-3 text-[11px] uppercase tracking-[0.14em] text-[#64736e]">
               <span className="flex items-center gap-2">
-                <Check size={13} className="text-[#b8ff4b]" /> Credit-based
-                usage
+                 <Check size={13} className="text-[#b8ff4b]" /> Unlimited
+                 subscription usage
               </span>
               <span className="flex items-center gap-2">
                 <Check size={13} className="text-[#b8ff4b]" /> Encrypted
@@ -148,12 +148,12 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
               </div>
               <div className="mt-5 grid grid-cols-2 gap-3">
                 {[
-                  ["Credits", "24,680", Coins, "text-[#b8ff4b]"],
+                   ["Subscription", "Active", CalendarDays, "text-[#b8ff4b]"],
                   ["Live sessions", "18", Users, "text-[#65e6ff]"],
                   ["Validated", "184K", Gauge, "text-[#d8b7ff]"],
                   ["Reply rate", "12.8%", MessageSquareText, "text-[#f4ca64]"],
                 ].map(([label, value, Icon, color]) => {
-                  const MetricIcon = Icon as typeof Coins;
+                   const MetricIcon = Icon as typeof CalendarDays;
                   return (
                     <div
                       key={String(label)}
@@ -228,16 +228,16 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
         <section id="pricing" className="border-t border-white/[0.07] py-24">
           <div className="text-center">
             <p className="text-[10px] font-bold uppercase tracking-[0.22em] text-[#b8ff4b]">
-              Transparent capacity
+               Simple subscriptions
             </p>
             <h2 className="mt-4 text-4xl font-semibold tracking-[-0.05em] sm:text-5xl">
-              Plans start the engine.
+               Subscribe once.
               <br />
-              Credits keep it moving.
+               Use everything.
             </h2>
             <p className="mx-auto mt-5 max-w-2xl text-sm leading-7 text-[#74837e]">
-              Every plan includes credits. Top up whenever you need more, and
-              see the exact cost of each task from your workspace.
+               Every period includes all features and unlimited usage. Six-month
+               and annual options include a lower effective monthly price.
             </p>
           </div>
           <div className="mt-12 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -260,12 +260,10 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
                   ${(plan.priceUsdCents / 100).toFixed(0)}
                   <span className="text-xs font-normal text-[#66756f]">
                     {" "}
-                    / {plan.durationDays || "lifetime"} days
+                     / {plan.durationDays} days
                   </span>
                 </p>
-                <p className="mt-2 font-mono text-sm text-[#b8ff4b]">
-                  {plan.creditsIncluded.toLocaleString()} credits included
-                </p>
+                 <p className="mt-2 font-mono text-sm text-[#b8ff4b]">Unlimited usage included</p>
                 <div className="mt-6 space-y-2 border-t border-white/[0.07] pt-5">
                   {plan.features.map((feature) => (
                     <p
@@ -299,11 +297,11 @@ export function SignalDeskLanding({ plans }: { plans: ValidatorPlan[] }) {
               <h2 className="mt-5 text-3xl font-semibold tracking-[-0.04em]">
                 Your data stays isolated.
                 <br />
-                Your costs stay visible.
+                 Your subscription stays simple.
               </h2>
               <p className="mt-4 max-w-2xl text-sm leading-7 text-[#82908b]">
                 Encrypted Telegram credentials, account-owned lists, durable
-                credit history, safety-aware campaign execution, and a support
+                 usage history, safety-aware campaign execution, and a support
                 line when you need a human.
               </p>
             </div>

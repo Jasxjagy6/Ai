@@ -2,26 +2,26 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { requireValidatorAdmin } from "@/lib/validator-admin-auth";
-import {
-  getValidatorCreditSettings,
-  saveValidatorCreditSettings,
-  VALIDATOR_TASK_CODES,
-} from "@/lib/validator-credits";
+import { getValidatorCreditSettings, saveValidatorCreditSettings } from "@/lib/validator-credits";
 import {
   getValidatorPlans,
   saveValidatorPlans,
   VALIDATOR_PLAN_CODES,
 } from "@/lib/validator-plans";
-import { createValidatorAccessKey } from "@/lib/validator-auth";
+import {
+  createValidatorAccessKey,
+  decryptValidatorAccessKey,
+} from "@/lib/validator-auth";
+import { rawKeyForPurchase } from "@/lib/validator-billing";
+import { telegramTrialKey } from "@/lib/validator-trials";
 
-const planCode = z.enum(["basic", "pro", "vip", "enterprise"]);
+const planCode = z.enum(["week", "month", "six_months", "year"]);
 const planSchema = z.object({
   code: planCode,
   name: z.string().trim().min(1).max(80),
   tagline: z.string().trim().max(160),
   priceUsdCents: z.number().int().min(50).max(100_000_000),
-  durationDays: z.number().int().min(1).max(36500).nullable(),
-  creditsIncluded: z.number().int().min(0).max(1_000_000_000),
+  durationDays: z.number().int().min(1).max(36500),
   validatorAccess: z.boolean(),
   messagingAccess: z.boolean(),
   aiChatAccess: z.boolean(),
@@ -30,25 +30,6 @@ const planSchema = z.object({
   enabled: z.boolean(),
   featured: z.boolean(),
   features: z.array(z.string().trim().min(1).max(140)).max(12),
-});
-const priceSchema = z.object({
-  label: z.string().trim().min(1).max(80),
-  baseCost: z.number().int().min(0).max(10_000_000),
-  itemCost: z.number().int().min(0).max(10_000_000),
-  itemUnit: z.number().int().min(1).max(1_000_000),
-  sessionCost: z.number().int().min(0).max(10_000_000),
-  enabled: z.boolean(),
-});
-const packSchema = z.object({
-  code: z
-    .string()
-    .trim()
-    .regex(/^[a-z0-9_]{2,40}$/),
-  name: z.string().trim().min(1).max(80),
-  credits: z.number().int().min(1).max(1_000_000_000),
-  priceUsdCents: z.number().int().min(50).max(100_000_000),
-  enabled: z.boolean(),
-  featured: z.boolean(),
 });
 
 const actionSchema = z.discriminatedUnion("action", [
@@ -60,12 +41,11 @@ const actionSchema = z.discriminatedUnion("action", [
     action: z.literal("create_key"),
     email: z.string().email().max(254),
     label: z.string().trim().min(1).max(80),
-    planCode: planCode,
-    expiresInDays: z.number().int().min(1).max(36500).nullable(),
-    credits: z.number().int().min(0).max(1_000_000_000),
-    validatorAccess: z.boolean(),
-    messagingAccess: z.boolean(),
-    sessionLimit: z.number().int().min(1).max(100_000).nullable(),
+    planCode,
+  }),
+  z.object({
+    action: z.literal("rotate_key"),
+    keyId: z.string().min(1),
   }),
   z.object({
     action: z.literal("revoke_key"),
@@ -73,24 +53,14 @@ const actionSchema = z.discriminatedUnion("action", [
     revoked: z.boolean(),
   }),
   z.object({
-    action: z.literal("save_credits"),
-    settings: z.object({
-      creditsPerUsd: z.number().int().min(1).max(1_000_000),
-      affiliateRateBps: z.number().int().min(0).max(10_000),
-      tasks: z.record(z.enum(VALIDATOR_TASK_CODES), priceSchema),
-      topups: z.array(packSchema).min(1).max(20),
-    }),
+    action: z.literal("save_affiliate"),
+    affiliateRateBps: z.number().int().min(0).max(10_000),
   }),
   z.object({
     action: z.literal("account"),
     accountId: z.string().min(1),
     active: z.boolean().optional(),
-    creditAdjustment: z
-      .number()
-      .int()
-      .min(-1_000_000_000)
-      .max(1_000_000_000)
-      .optional(),
+    extendDays: z.number().int().min(1).max(36500).optional(),
     affiliateRateBps: z.number().int().min(0).max(10_000).nullable().optional(),
   }),
   z.object({
@@ -112,7 +82,8 @@ const actionSchema = z.discriminatedUnion("action", [
 ]);
 
 async function dashboard() {
-  const [plans, creditSettings, accounts, purchases, updates, totals] =
+  const now = new Date();
+  const [plans, settings, accounts, purchases, updates, accountCount, activeSubscriptions] =
     await Promise.all([
       getValidatorPlans(),
       getValidatorCreditSettings(),
@@ -120,7 +91,19 @@ async function dashboard() {
         orderBy: { createdAt: "desc" },
         take: 250,
         include: {
-          keys: { orderBy: { createdAt: "desc" }, take: 10 },
+          keys: {
+            orderBy: { createdAt: "desc" },
+            take: 10,
+            include: {
+              telegramTrial: { select: { telegramUserId: true } },
+              purchases: {
+                where: { purchaseType: "plan", fulfilledAt: { not: null } },
+                orderBy: { createdAt: "asc" },
+                take: 1,
+                select: { id: true },
+              },
+            },
+          },
           _count: {
             select: {
               referrals: true,
@@ -130,9 +113,7 @@ async function dashboard() {
               telegramCampaigns: true,
             },
           },
-          affiliateRewardsEarned: {
-            select: { rewardCredits: true },
-          },
+          affiliateRewardsEarned: { select: { rewardDays: true } },
         },
       }),
       prisma.validatorPurchase.findMany({
@@ -142,8 +123,7 @@ async function dashboard() {
           id: true,
           email: true,
           planName: true,
-          purchaseType: true,
-          creditsAmount: true,
+          durationDays: true,
           amountUsdCents: true,
           status: true,
           paidAt: true,
@@ -151,35 +131,39 @@ async function dashboard() {
         },
       }),
       prisma.validatorUpdate.findMany({ orderBy: { publishedAt: "desc" } }),
-      prisma.validatorAccount.aggregate({
-        _sum: {
-          creditsBalance: true,
-          creditsPurchased: true,
-          creditsSpent: true,
-        },
-        _count: true,
+      prisma.validatorAccount.count(),
+      prisma.validatorAccount.count({
+        where: { active: true, planExpiresAt: { gt: now } },
       }),
     ]);
+
   return {
     plans,
-    creditSettings,
-    totals,
+    affiliateRateBps: settings.affiliateRateBps,
+    totals: {
+      accounts: accountCount,
+      activeSubscriptions,
+      expiredSubscriptions: accountCount - activeSubscriptions,
+      operations: accounts.reduce(
+        (sum, account) =>
+          sum + account._count.jobs + account._count.telegramCampaigns,
+        0,
+      ),
+    },
     purchases,
     updates,
     accounts: accounts.map((account) => ({
       id: account.id,
       email: account.email,
       active: account.active,
-      creditsBalance: account.creditsBalance,
-      creditsPurchased: account.creditsPurchased,
-      creditsSpent: account.creditsSpent,
       currentPlanCode: account.currentPlanCode,
       planExpiresAt: account.planExpiresAt,
+      subscriptionActive: !!account.planExpiresAt && account.planExpiresAt > now,
       referralCode: account.referralCode,
       affiliateRateBps: account.affiliateRateBps,
       referralCount: account._count.referrals,
-      affiliateCredits: account.affiliateRewardsEarned.reduce(
-        (sum, reward) => sum + reward.rewardCredits,
+      affiliateDays: account.affiliateRewardsEarned.reduce(
+        (sum, reward) => sum + reward.rewardDays,
         0,
       ),
       listsCount: account._count.lists,
@@ -190,12 +174,15 @@ async function dashboard() {
         id: key.id,
         label: key.label,
         prefix: key.prefix,
+        rawKey:
+          decryptValidatorAccessKey(key.rawKeyEncrypted) ||
+          (key.telegramTrial
+            ? telegramTrialKey(key.telegramTrial.telegramUserId)
+            : key.purchases[0]
+              ? rawKeyForPurchase(key.purchases[0].id)
+              : null),
         revoked: key.revoked,
-        expiresAt: key.expiresAt,
         lastUsedAt: key.lastUsedAt,
-        validatorAccess: key.validatorAccess,
-        messagingAccess: key.messagingAccess,
-        sessionLimit: key.sessionLimit,
       })),
       createdAt: account.createdAt,
     })),
@@ -218,146 +205,90 @@ export async function PATCH(request: Request) {
       { status: 400 },
     );
   const data = parsed.data;
+
   if (data.action === "save_plans") {
-    for (const code of VALIDATOR_PLAN_CODES) {
-      const plan = data.plans[code] as Record<string, unknown>;
-      if (plan.code !== code)
-        return NextResponse.json(
-          { error: `Invalid ${code} plan` },
-          { status: 400 },
-        );
-      if (!plan.validatorAccess && !plan.messagingAccess)
-        return NextResponse.json(
-          { error: `${code} must enable a product` },
-          { status: 400 },
-        );
-    }
-    await saveValidatorPlans(data.plans as Parameters<typeof saveValidatorPlans>[0]);
-  } else if (data.action === "save_credits") {
-    const codes = new Set(data.settings.topups.map((pack) => pack.code));
-    if (codes.size !== data.settings.topups.length)
-      return NextResponse.json(
-        { error: "Credit pack codes must be unique" },
-        { status: 400 },
-      );
-    await saveValidatorCreditSettings(data.settings);
+    for (const code of VALIDATOR_PLAN_CODES)
+      if (data.plans[code].code !== code)
+        return NextResponse.json({ error: `Invalid ${code} plan` }, { status: 400 });
+    await saveValidatorPlans(data.plans);
+  } else if (data.action === "save_affiliate") {
+    const settings = await getValidatorCreditSettings();
+    await saveValidatorCreditSettings({
+      ...settings,
+      affiliateRateBps: data.affiliateRateBps,
+    });
   } else if (data.action === "create_key") {
-    if (!data.validatorAccess && !data.messagingAccess)
-      return NextResponse.json(
-        { error: "Enable at least one product" },
-        { status: 400 },
-      );
-    const { raw, keyHash, prefix } = createValidatorAccessKey();
-    const email = data.email.toLowerCase();
-    const expiresAt = data.expiresInDays
-      ? new Date(Date.now() + data.expiresInDays * 24 * 60 * 60 * 1000)
-      : null;
+    const plans = await getValidatorPlans();
+    const plan = plans[data.planCode];
+    const { raw, keyHash, prefix, rawKeyEncrypted } = createValidatorAccessKey();
+    const now = new Date();
     await prisma.$transaction(async (transaction) => {
       const account = await transaction.validatorAccount.upsert({
-        where: { email },
-        update: {
-          active: true,
-          currentPlanCode: data.planCode,
-          planExpiresAt: expiresAt,
-          ...(data.credits
-            ? {
-                creditsBalance: { increment: data.credits },
-                creditsPurchased: { increment: data.credits },
-                lastCreditTopupAt: new Date(),
-              }
-            : {}),
-        },
-        create: {
-          email,
-          currentPlanCode: data.planCode,
-          planExpiresAt: expiresAt,
-          creditsBalance: data.credits,
-          creditsPurchased: data.credits,
-          lastCreditTopupAt: data.credits ? new Date() : null,
-        },
+        where: { email: data.email.toLowerCase() },
+        update: { active: true },
+        create: { email: data.email.toLowerCase(), active: true },
       });
-      const key = await transaction.validatorAccessKey.create({
+      const startsAt =
+        account.planExpiresAt && account.planExpiresAt > now
+          ? account.planExpiresAt
+          : now;
+      const expiresAt = new Date(startsAt.getTime() + plan.durationDays * 86_400_000);
+      await transaction.validatorAccount.update({
+        where: { id: account.id },
+        data: { currentPlanCode: data.planCode, planExpiresAt: expiresAt },
+      });
+      await transaction.validatorAccessKey.create({
         data: {
           accountId: account.id,
           label: data.label,
           keyHash,
           prefix,
-          expiresAt,
+          rawKeyEncrypted,
           planCode: data.planCode,
           validatorAccess: true,
           messagingAccess: true,
-          requestLimit: null,
-          sessionLimit: null,
-          messageLimit: null,
         },
       });
-      if (data.credits) {
-        await transaction.validatorCreditTransaction.create({
-          data: {
-            accountId: account.id,
-            accessKeyId: key.id,
-            amount: data.credits,
-            balanceAfter: account.creditsBalance,
-            kind: "admin_grant",
-            description: `${data.label} included credits`,
-          },
-        });
-      }
     });
-    return NextResponse.json({
-      ok: true,
-      issuedKey: raw,
-      ...(await dashboard()),
-    });
+    return NextResponse.json({ ok: true, issuedKey: raw, ...(await dashboard()) });
+  } else if (data.action === "rotate_key") {
+    const { raw, keyHash, prefix, rawKeyEncrypted } = createValidatorAccessKey();
+    await prisma.$transaction([
+      prisma.validatorAccessKey.update({
+        where: { id: data.keyId },
+        data: { keyHash, prefix, rawKeyEncrypted, revoked: false },
+      }),
+      prisma.validatorSession.deleteMany({ where: { accessKeyId: data.keyId } }),
+    ]);
+    return NextResponse.json({ ok: true, issuedKey: raw, ...(await dashboard()) });
   } else if (data.action === "revoke_key") {
     await prisma.validatorAccessKey.update({
       where: { id: data.keyId },
       data: { revoked: data.revoked },
     });
     if (data.revoked)
-      await prisma.validatorSession.deleteMany({
-        where: { accessKeyId: data.keyId },
-      });
+      await prisma.validatorSession.deleteMany({ where: { accessKeyId: data.keyId } });
   } else if (data.action === "account") {
-    const account = await prisma.validatorAccount.findUnique({
-      where: { id: data.accountId },
-    });
+    const account = await prisma.validatorAccount.findUnique({ where: { id: data.accountId } });
     if (!account)
       return NextResponse.json({ error: "Account not found" }, { status: 404 });
-    const adjustment = data.creditAdjustment || 0;
-    if (account.creditsBalance + adjustment < 0)
-      return NextResponse.json(
-        { error: "Adjustment would make the balance negative" },
-        { status: 400 },
-      );
-    await prisma.$transaction(async (transaction) => {
-      const updated = await transaction.validatorAccount.update({
-        where: { id: data.accountId },
-        data: {
-          ...(data.active !== undefined ? { active: data.active } : {}),
-          ...(data.affiliateRateBps !== undefined
-            ? { affiliateRateBps: data.affiliateRateBps }
-            : {}),
-          ...(adjustment
-            ? {
-                creditsBalance: { increment: adjustment },
-                creditsPurchased:
-                  adjustment > 0 ? { increment: adjustment } : undefined,
-              }
-            : {}),
-        },
-      });
-      if (adjustment) {
-        await transaction.validatorCreditTransaction.create({
-          data: {
-            accountId: data.accountId,
-            amount: adjustment,
-            balanceAfter: updated.creditsBalance,
-            kind: "admin_adjustment",
-            description: "Validator admin balance adjustment",
-          },
-        });
-      }
+    const now = new Date();
+    const startsAt =
+      account.planExpiresAt && account.planExpiresAt > now ? account.planExpiresAt : now;
+    await prisma.validatorAccount.update({
+      where: { id: data.accountId },
+      data: {
+        ...(data.active !== undefined ? { active: data.active } : {}),
+        ...(data.affiliateRateBps !== undefined
+          ? { affiliateRateBps: data.affiliateRateBps }
+          : {}),
+        ...(data.extendDays
+          ? {
+              active: true,
+              planExpiresAt: new Date(startsAt.getTime() + data.extendDays * 86_400_000),
+            }
+          : {}),
+      },
     });
   } else if (data.action === "create_update") {
     await prisma.validatorUpdate.create({

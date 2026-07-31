@@ -10,6 +10,7 @@ import { ValidatorGuide } from "@/components/validator/validator-guide";
 import { ValidatorReports } from "@/components/validator/validator-reports";
 import { SignalSelect } from "@/components/validator/signal-select";
 import { TelegramHistoryView } from "@/components/validator/telegram-history-view";
+import { TelegramDraftsView } from "@/components/validator/telegram-drafts-view";
 import {
   CAPITALBOT_RESPONSE_LANGUAGES,
   type CapitalBotResponseLanguage,
@@ -22,6 +23,7 @@ import {
   BadgeDollarSign,
   Bell,
   BookOpen,
+  CalendarDays,
   Check,
   CheckCircle2,
   ChevronDown,
@@ -88,6 +90,8 @@ type Account = {
   requestsRemaining: number | null;
   accessExpiresAt: string | null;
   accessExpired: boolean;
+  subscriptionActive: boolean;
+  subscriptionDaysRemaining: number;
   creditsActive: boolean;
   creditsBalance: number;
   creditsPurchased: number;
@@ -360,7 +364,6 @@ type TelegramMessageSchedule = {
   lastRunAt: string | null;
 };
 export type AiChatterData = {
-  creditsBalance: number;
   campaignLimit: number | null;
   activeCampaigns: number;
   campaigns: AiCampaignSummary[];
@@ -399,12 +402,9 @@ export type AiCampaignSummary = {
   messagesReceived: number;
   messagesSent: number;
   failedCount: number;
-  creditsUsed: number;
   startedAt: string;
   endsAt: string | null;
   stoppedAt: string | null;
-  creditGraceStartedAt: string | null;
-  creditGraceEndsAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1192,7 +1192,9 @@ function Workspace({
   onAccountChanged: (account: Account) => void;
   onLock: () => void;
 }) {
-  const [view, setView] = useState<View>("dashboard");
+  const [view, setView] = useState<View>(
+    account.subscriptionActive ? "dashboard" : "credits",
+  );
   const [mobileNav, setMobileNav] = useState(false);
   const [desktopNav, setDesktopNav] = useState(true);
   const [accountMenu, setAccountMenu] = useState(false);
@@ -1344,7 +1346,7 @@ function Workspace({
             id: "dashboard" as const,
             label: "Dashboard",
             icon: LayoutDashboard,
-            disabled: false,
+            disabled: !account.subscriptionActive,
           },
           {
             id: "updates" as const,
@@ -1416,8 +1418,8 @@ function Workspace({
         items: [
           {
             id: "credits" as const,
-            label: "Credits & Plan",
-            icon: Coins,
+            label: "Subscription",
+            icon: CalendarDays,
             disabled: false,
           },
           {
@@ -1502,8 +1504,7 @@ function Workspace({
           href="/buy"
           className="flex items-center justify-center gap-2 rounded-lg border border-[#9cff38]/20 bg-[#9cff38]/[0.045] py-2.5 text-[10px] font-medium text-[#c9f99c] transition hover:border-[#9cff38]/35 hover:bg-[#9cff38]/[0.08]"
         >
-          Top up <ArrowRight size={11} /> {formatNumber(account.creditsBalance)}{" "}
-          credits
+          Manage subscription <ArrowRight size={11} />
         </Link>
       </div>
 
@@ -1624,9 +1625,11 @@ function Workspace({
               onClick={() => openView("credits")}
               className="flex h-9 items-center gap-2 rounded-lg border border-[#9cff38]/15 bg-[#9cff38]/[0.035] px-2.5 text-[10px] font-medium text-[#d2f6ae] sm:px-3"
             >
-              <Coins size={13} />{" "}
+              <CalendarDays size={13} />{" "}
               <span className="hidden sm:inline">
-                {formatNumber(account.creditsBalance)} credits
+                {account.subscriptionActive
+                  ? `${account.subscriptionDaysRemaining} days left`
+                  : "Subscription expired"}
               </span>
             </button>
             <button
@@ -1670,8 +1673,8 @@ function Workspace({
                     {[
                       {
                         id: "credits" as const,
-                        label: "Credits & Plan",
-                        icon: Coins,
+                        label: "Subscription",
+                        icon: CalendarDays,
                       },
                       {
                         id: "account-settings" as const,
@@ -1771,21 +1774,21 @@ function Workspace({
             ) : view === "communication-settings" ? (
               <AccountSettingsView account={account} notify={notify} />
             ) : view === "account-settings" ? (
-              <AccountCenter
+              <SubscriptionAccountCenter
                 account={account}
                 mode="account"
                 notify={notify}
                 onAccountChanged={onAccountChanged}
               />
             ) : view === "credits" ? (
-              <AccountCenter
+              <SubscriptionAccountCenter
                 account={account}
                 mode="credits"
                 notify={notify}
                 onAccountChanged={onAccountChanged}
               />
             ) : view === "affiliates" ? (
-              <AccountCenter
+              <SubscriptionAccountCenter
                 account={account}
                 mode="affiliates"
                 notify={notify}
@@ -1797,7 +1800,7 @@ function Workspace({
                 openFeature={(destination) => setView(destination)}
               />
             ) : (
-              <AccountCenter
+              <SubscriptionAccountCenter
                 account={account}
                 mode="updates"
                 notify={notify}
@@ -1859,6 +1862,184 @@ function Workspace({
             </button>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+type SubscriptionCenterData = {
+  account: Account;
+  rewards: Array<{
+    id: string;
+    rateBps: number;
+    depositUsdCents: number;
+    rewardDays: number;
+    createdAt: string;
+    referredAccount: { email: string };
+  }>;
+  referrals: Array<{
+    id: string;
+    email: string;
+    currentPlanCode: string | null;
+    createdAt: string;
+  }>;
+  updates: Array<{
+    id: string;
+    title: string;
+    body: string;
+    tag: string;
+    publishedAt: string;
+  }>;
+  affiliateRateBps: number;
+};
+
+function SubscriptionAccountCenter({
+  account,
+  mode,
+  notify,
+  onAccountChanged,
+}: {
+  account: Account;
+  mode: "account" | "credits" | "affiliates" | "updates";
+  notify: (message: string, tone?: Toast["tone"]) => void;
+  onAccountChanged: (account: Account) => void;
+}) {
+  const [data, setData] = useState<SubscriptionCenterData | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  async function load() {
+    const result = await api<SubscriptionCenterData>("/api/validator/account");
+    setData(result);
+    onAccountChanged(result.account);
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void load().catch((error) => notify(error.message, "error"));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!data)
+    return (
+      <div className="flex min-h-[70dvh] items-center justify-center">
+        <Loader2 size={23} className="animate-spin text-[#b8ff4b]" />
+      </div>
+    );
+
+  if (mode === "updates")
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-6 lg:p-8">
+        <div className="rounded-[24px] border border-[#b8ff4b]/15 bg-gradient-to-r from-[#b8ff4b]/[0.065] to-transparent p-6">
+          <p className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">Signal Desk newsroom</p>
+          <h2 className="mt-2 text-3xl font-semibold">News and releases</h2>
+        </div>
+        <div className="mt-4 grid gap-3 md:grid-cols-2">
+          {data.updates.map((item) => (
+            <article key={item.id} className={`${PANEL} rounded-[20px] p-5`}>
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-[9px] font-bold uppercase tracking-wider text-[#b8ff4b]">{item.tag}</span>
+                <time className="text-[9px] text-[#5f6d68]">{new Date(item.publishedAt).toLocaleDateString()}</time>
+              </div>
+              <h3 className="mt-3 font-semibold">{item.title}</h3>
+              <p className="mt-2 whitespace-pre-wrap text-xs leading-5 text-[#80908a]">{item.body}</p>
+            </article>
+          ))}
+        </div>
+      </div>
+    );
+
+  if (mode === "affiliates") {
+    const referralUrl =
+      typeof window === "undefined" || !account.referralCode
+        ? ""
+        : `${window.location.origin}/buy?ref=${account.referralCode}`;
+    const earnedDays = data.rewards.reduce((sum, reward) => sum + reward.rewardDays, 0);
+    return (
+      <div className="mx-auto max-w-6xl p-4 sm:p-7 lg:p-10">
+        <section className="rounded-[28px] border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.045] p-6 sm:p-8">
+          <Gift size={22} className="text-[#b8ff4b]" />
+          <h2 className="mt-5 text-3xl font-semibold">Invite operators. Earn subscription time.</h2>
+          <p className="mt-3 max-w-2xl text-sm leading-6 text-[#81908c]">
+            Receive {data.affiliateRateBps / 100}% of each referred subscription period as extra days on your own subscription.
+          </p>
+          <div className="mt-5 flex flex-col gap-2 sm:flex-row">
+            <code className="min-w-0 flex-1 break-all rounded-xl border border-white/10 bg-[#071111] p-3 text-xs text-[#dfffaa]">{referralUrl}</code>
+            <button
+              disabled={!referralUrl}
+              onClick={async () => {
+                await navigator.clipboard.writeText(referralUrl);
+                setCopied(true);
+                notify("Referral link copied.", "success");
+              }}
+              className="rounded-xl bg-[#b8ff4b] px-5 py-3 text-xs font-bold text-[#07100d]"
+            >
+              {copied ? "Copied" : "Copy link"}
+            </button>
+          </div>
+        </section>
+        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+          <Metric label="Invited users" value={data.referrals.length} icon={Users} />
+          <Metric label="Subscription days earned" value={earnedDays} icon={CalendarDays} color="text-[#b8ff4b]" />
+          <Metric label="Reward rate" value={`${data.affiliateRateBps / 100}%`} icon={BadgeDollarSign} color="text-[#65e6ff]" />
+        </div>
+        <section className={`${PANEL} mt-5 overflow-hidden rounded-[24px]`}>
+          <div className="border-b border-white/[0.07] p-5"><h3 className="font-semibold">Reward history</h3></div>
+          <div className="divide-y divide-white/[0.06]">
+            {data.rewards.map((reward) => (
+              <div key={reward.id} className="flex items-center gap-3 p-4 text-xs">
+                <span className="min-w-0 flex-1 truncate">{reward.referredAccount.email}</span>
+                <span className="text-[#71807c]">${(reward.depositUsdCents / 100).toFixed(2)}</span>
+                <span className="font-mono text-[#b8ff4b]">+{reward.rewardDays} days</span>
+              </div>
+            ))}
+            {!data.rewards.length && <p className="p-8 text-center text-xs text-[#71807c]">No subscription rewards yet.</p>}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  const expires = account.accessExpiresAt ? new Date(account.accessExpiresAt) : null;
+  return (
+    <div className="mx-auto max-w-6xl p-4 sm:p-7 lg:p-10">
+      <section className={`overflow-hidden rounded-[30px] border p-6 sm:p-8 ${account.subscriptionActive ? "border-[#b8ff4b]/25 bg-[#b8ff4b]/[0.05]" : "border-[#ff7474]/25 bg-[#ff7474]/[0.045]"}`}>
+        <div className="flex flex-col gap-6 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <p className={`text-[10px] font-bold uppercase tracking-[0.2em] ${account.subscriptionActive ? "text-[#b8ff4b]" : "text-[#ff9292]"}`}>Signal Desk subscription</p>
+            <h2 className="mt-3 text-4xl font-semibold tracking-[-0.05em]">
+              {account.subscriptionActive ? `${account.subscriptionDaysRemaining} days remaining` : "Subscription expired"}
+            </h2>
+            <p className="mt-3 text-sm text-[#81908c]">
+              {account.subscriptionActive
+                ? `All features and unlimited usage are active until ${expires?.toLocaleString()}.`
+                : "Renew your subscription to unlock every workspace feature again."}
+            </p>
+          </div>
+          <Link href="/buy" className="inline-flex items-center justify-center gap-2 rounded-xl bg-[#b8ff4b] px-5 py-3 text-sm font-bold text-[#07100d]">
+            {account.subscriptionActive ? "Extend subscription" : "Renew subscription"} <ArrowRight size={15} />
+          </Link>
+        </div>
+      </section>
+      <div className="mt-5 grid gap-4 lg:grid-cols-2">
+        <section className={`${PANEL} rounded-[24px] p-5`}>
+          <h3 className="text-sm font-semibold">Subscription details</h3>
+          <div className="mt-4 space-y-3 text-xs">
+            <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-[#71807c]">Workspace</span><span>{account.email}</span></div>
+            <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-[#71807c]">Period</span><span className="capitalize">{account.planCode?.replaceAll("_", " ") || "Manual"}</span></div>
+            <div className="flex justify-between border-b border-white/[0.06] pb-3"><span className="text-[#71807c]">Expires</span><span>{expires?.toLocaleString() || "Not set"}</span></div>
+            <div className="flex justify-between"><span className="text-[#71807c]">Included access</span><span className={account.subscriptionActive ? "text-[#b8ff4b]" : "text-[#ff9292]"}>{account.subscriptionActive ? "All features" : "Renewal only"}</span></div>
+          </div>
+        </section>
+        <section className={`${PANEL} rounded-[24px] p-5`}>
+          <h3 className="text-sm font-semibold">Access key</h3>
+          <p className="mt-2 text-xs leading-5 text-[#71807c]">Your key remains linked to this workspace across renewals. The admin can securely recover or rotate it if needed.</p>
+          <div className="mt-4 rounded-xl border border-white/[0.06] bg-[#071111] p-4">
+            <p className="text-[8px] uppercase tracking-wider text-[#626c67]">Key prefix</p>
+            <code className="mt-2 block text-xs text-[#dfffaa]">{account.accessKeyPrefix || "Not available"}</code>
+          </div>
+          <button onClick={() => void load()} className="mt-4 flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-xs text-[#aab3af]"><RefreshCw size={13} /> Refresh subscription</button>
+        </section>
       </div>
     </div>
   );
@@ -6468,7 +6649,7 @@ function TelegramSessionsView({
   );
 }
 
-type MessagingWorkflow = "users" | "direct" | "groups" | "fanout" | "schedules";
+type MessagingWorkflow = "users" | "direct" | "groups" | "fanout" | "drafts" | "schedules";
 
 function MessagingView(props: {
   account: Account;
@@ -6509,6 +6690,12 @@ function MessagingView(props: {
       icon: Layers3,
     },
     {
+      id: "drafts",
+      label: "Drafts",
+      description: "Place text in chats without sending",
+      icon: Save,
+    },
+    {
       id: "schedules",
       label: "Schedules",
       description: "Recurring group or channel runs",
@@ -6530,12 +6717,12 @@ function MessagingView(props: {
           </span>
         </h2>
         <p className="mt-3 max-w-2xl text-sm leading-6 text-[#71807c]">
-          User distribution, direct sends, group fan-out, every-account DM, and
-          recurring delivery each enforce their own contract while sharing one
-          durable report ledger.
+          User distribution, direct sends, group fan-out, every-account DM,
+          draft placement, and recurring delivery each enforce their own
+          contract while sharing one durable report ledger.
         </p>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-6">
         {workflows.map((item) => (
           <button
             key={item.id}
@@ -6557,11 +6744,15 @@ function MessagingView(props: {
           </button>
         ))}
       </div>
-      <MessagingCampaignWorkspace
-        key={workflow}
-        {...props}
-        workflow={workflow}
-      />
+      {workflow === "drafts" ? (
+        <TelegramDraftsView notify={props.notify} />
+      ) : (
+        <MessagingCampaignWorkspace
+          key={workflow}
+          {...props}
+          workflow={workflow}
+        />
+      )}
     </div>
   );
 }

@@ -3,8 +3,8 @@ import { ValidatorPurchase } from "@/components/validator/validator-purchase";
 import { getValidatorPlans, VALIDATOR_PLAN_CODES } from "@/lib/validator-plans";
 
 export const metadata: Metadata = {
-  title: "Plans and Credits | Signal Desk",
-  description: "Choose a Signal Desk plan or add workspace credits.",
+  title: "Subscriptions | Signal Desk",
+  description: "Choose a Signal Desk subscription period.",
 };
 
 export default async function BuyPage({
