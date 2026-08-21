@@ -58,7 +58,7 @@ export async function GET(request: Request) {
       take: 250,
       select: {
         id: true, name: true, provider: true, status: true, durationMode: true,
-        messagesReceived: true, messagesSent: true, failedCount: true, creditsUsed: true,
+        messagesReceived: true, messagesSent: true, failedCount: true,
         createdAt: true, startedAt: true, stoppedAt: true, lastError: true,
         _count: { select: { sessions: true, memories: true, jobs: true, responseLogs: true } },
       },
@@ -93,15 +93,15 @@ export async function GET(request: Request) {
       failed: run.failedCount, skipped: 0, secondary: run._count.memories,
       secondaryLabel: "conversations", requests: run._count.jobs, createdAt: run.createdAt,
       startedAt: run.startedAt, finishedAt: run.stoppedAt, error: run.lastError,
-      creditsUsed: run.creditsUsed, sessions: run._count.sessions, logs: run._count.responseLogs,
+      sessions: run._count.sessions, logs: run._count.responseLogs,
     })),
   ].sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
 
   const summary = {
     runs: runs.length,
-    active: runs.filter((run) => ["pending", "running", "processing", "starting", "credit_grace"].includes(run.status)).length,
+    active: runs.filter((run) => ["pending", "running", "processing", "starting", "subscription_paused", "paused_subscription"].includes(run.status)).length,
     completed: runs.filter((run) => ["completed", "stopped", "expired"].includes(run.status)).length,
-    failed: runs.filter((run) => ["failed", "error", "grace_expired"].includes(run.status)).length,
+    failed: runs.filter((run) => ["failed", "error"].includes(run.status)).length,
     succeeded: runs.reduce((sum, run) => sum + run.succeeded, 0),
     errors: runs.reduce((sum, run) => sum + run.failed, 0),
   };

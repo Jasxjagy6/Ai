@@ -2,15 +2,13 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
   startValidatorPlanPurchase,
-  startValidatorTopup,
 } from "@/lib/validator-billing";
-import { requireSignalDeskAccount } from "@/lib/validator-auth";
+import { getSignalDeskAccount } from "@/lib/validator-auth";
 
 const schema = z.object({
-  type: z.enum(["plan", "topup"]).default("plan"),
+  type: z.literal("plan").default("plan"),
   email: z.string().email().max(254).optional(),
-  planCode: z.enum(["basic", "pro", "vip", "enterprise"]).optional(),
-  packCode: z.string().trim().max(40).optional(),
+  planCode: z.enum(["week", "month", "six_months", "year"]),
   referralCode: z.string().trim().max(20).optional(),
 });
 
@@ -38,28 +36,16 @@ export async function POST(request: Request) {
       { status: 400 },
     );
   try {
-    const checkout =
-      parsed.data.type === "topup"
-        ? await (async () => {
-            const account = await requireSignalDeskAccount();
-            if (!account) throw new Error("Sign in before adding credits");
-            if (!parsed.data.packCode) throw new Error("Choose a credit pack");
-            return startValidatorTopup(
-              account,
-              parsed.data.packCode,
-              publicOrigin(request),
-            );
-          })()
-        : await (async () => {
-            if (!parsed.data.email || !parsed.data.planCode)
-              throw new Error("Enter an email and choose a plan");
-            return startValidatorPlanPurchase(
-              parsed.data.email,
-              parsed.data.planCode,
-              publicOrigin(request),
-              parsed.data.referralCode,
-            );
-          })();
+    const account = await getSignalDeskAccount();
+    if (!account && !parsed.data.email)
+      throw new Error("Enter an email and choose a subscription");
+    const checkout = await startValidatorPlanPurchase(
+      parsed.data.email || account?.email || "",
+      parsed.data.planCode,
+      publicOrigin(request),
+      parsed.data.referralCode,
+      account,
+    );
     return NextResponse.json(checkout, { status: 201 });
   } catch (error) {
     return NextResponse.json(

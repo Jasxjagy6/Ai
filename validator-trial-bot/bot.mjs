@@ -88,7 +88,7 @@ function trialKeyboard() {
   return {
     inline_keyboard: [
       [{ text: "Open Signal Desk", url: `${PANEL_URL}/workspace` }],
-      [{ text: "Buy credits or a plan", url: `${PANEL_URL}/buy` }],
+      [{ text: "Choose a subscription", url: `${PANEL_URL}/buy` }],
       [{ text: "Back to overview", callback_data: "show_home" }],
     ],
   };
@@ -98,11 +98,11 @@ const INTRO = `<b>Signal Desk Telegram Operations Panel</b>
 
 Run Telegram account fleets from one secure workspace. Import or log in sessions, validate usernames, send durable messaging campaigns, schedule delivery, manage account profiles, use AI Chatter, inspect every result, and export reports.
 
-<b>Every plan includes every feature.</b>
-Credits are charged only when an operation runs.
+<b>Every subscription includes every feature.</b>
+Use every operation without credit deductions while the subscription is active.
 
 <b>Free trial</b>
-7 days • 2,500 credits • all features • one trial per Telegram account
+7 days • unlimited usage • all features • one trial per Telegram account
 
 Tap the button below to issue your private panel login key.`;
 
@@ -121,7 +121,7 @@ const FEATURES = `<b>Everything included in Signal Desk</b>
 • AI Chatter campaigns and conversation memory
 • Session lists, bulk actions, and account isolation
 
-Every plan can use every feature. Your credit balance is consumed only by operations that run.`;
+Every subscription can use every feature with no credit deductions while active.`;
 
 async function render(chatId, messageId, text, replyMarkup) {
   if (messageId) {
@@ -200,7 +200,7 @@ async function deliverTrial(chatId, messageId, user) {
   await render(
     chatId,
     messageId,
-    `<b>Preparing your Signal Desk trial</b>\n\nCreating your isolated workspace, login key, and 2,500-credit balance...`,
+    `<b>Preparing your Signal Desk trial</b>\n\nCreating your isolated workspace and private login key...`,
     { inline_keyboard: [] },
   );
   const trial = await claimTrial(user);
@@ -210,8 +210,8 @@ async function deliverTrial(chatId, messageId, user) {
     timeStyle: "short",
   });
   const status = trial.alreadyClaimed
-    ? "Your Telegram account already claimed its one-time trial. Here is the same login key again. No additional credits were added."
-    : "Your trial is active. A new isolated workspace and 2,500 credits were issued.";
+    ? "Your Telegram account already claimed its one-time trial. Here is the same login key again."
+    : "Your trial is active. A new isolated workspace with unlimited usage was issued.";
   await render(chatId, messageId, `<b>Signal Desk 7-day trial</b>
 
 ${status}
@@ -221,8 +221,7 @@ ${status}
 
 <b>Trial details</b>
 • Access: every panel feature
-• Credits granted: ${Number(trial.creditsGranted).toLocaleString()}
-• Current balance: ${Number(trial.creditsBalance).toLocaleString()}
+• Usage: unlimited while the trial is active
 • Expires: ${escapeHtml(expires)} UTC
 • Panel: ${escapeHtml(`${PANEL_URL}/workspace`)}
 

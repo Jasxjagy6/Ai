@@ -1,9 +1,9 @@
 import { createHash, createHmac } from "crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { encryptValidatorAccessKey } from "@/lib/validator-auth";
 
 export const TELEGRAM_TRIAL_DAYS = 7;
-export const TELEGRAM_TRIAL_CREDITS = 2500;
 
 function trialSecret() {
   const value = process.env.VALIDATOR_TRIAL_SECRET?.trim();
@@ -12,7 +12,7 @@ function trialSecret() {
   return value;
 }
 
-function trialKey(telegramUserId: bigint) {
+export function telegramTrialKey(telegramUserId: bigint) {
   const token = createHmac("sha256", trialSecret())
     .update(`signal-desk-trial:${telegramUserId}`)
     .digest("base64url");
@@ -26,19 +26,16 @@ function hash(value: string) {
 function trialView(
   trial: {
     telegramUserId: bigint;
-    creditsGranted: number;
     claimedAt: Date;
     expiresAt: Date;
-    account: { email: string; creditsBalance: number };
+    account: { email: string };
   },
   alreadyClaimed: boolean,
 ) {
   return {
-    key: trialKey(trial.telegramUserId),
+    key: telegramTrialKey(trial.telegramUserId),
     alreadyClaimed,
     email: trial.account.email,
-    creditsGranted: trial.creditsGranted,
-    creditsBalance: trial.account.creditsBalance,
     claimedAt: trial.claimedAt,
     expiresAt: trial.expiresAt,
     trialDays: TELEGRAM_TRIAL_DAYS,
@@ -57,7 +54,7 @@ export async function claimTelegramTrial(input: {
       const existing = await transaction.validatorTelegramTrial.findUnique({
         where: { telegramUserId: input.telegramUserId },
         include: {
-          account: { select: { email: true, creditsBalance: true } },
+          account: { select: { email: true } },
         },
       });
       if (existing) {
@@ -82,16 +79,13 @@ export async function claimTelegramTrial(input: {
       const expiresAt = new Date(
         now.getTime() + TELEGRAM_TRIAL_DAYS * 24 * 60 * 60 * 1000,
       );
-      const rawKey = trialKey(input.telegramUserId);
+      const rawKey = telegramTrialKey(input.telegramUserId);
       const email = `telegram-${input.telegramUserId}@trial.signal-desk.local`;
       const account = await transaction.validatorAccount.create({
         data: {
           email,
           currentPlanCode: "trial",
           planExpiresAt: expiresAt,
-          lastCreditTopupAt: now,
-          creditsBalance: TELEGRAM_TRIAL_CREDITS,
-          creditsPurchased: TELEGRAM_TRIAL_CREDITS,
         },
       });
       const key = await transaction.validatorAccessKey.create({
@@ -100,7 +94,8 @@ export async function claimTelegramTrial(input: {
           label: "Telegram 7-day trial",
           keyHash: hash(rawKey),
           prefix: `${rawKey.slice(0, 15)}...`,
-          expiresAt,
+          rawKeyEncrypted: encryptValidatorAccessKey(rawKey),
+          expiresAt: null,
           planCode: "trial",
           validatorAccess: true,
           messagingAccess: true,
@@ -117,27 +112,11 @@ export async function claimTelegramTrial(input: {
           telegramLastName: input.lastName || null,
           accountId: account.id,
           accessKeyId: key.id,
-          creditsGranted: TELEGRAM_TRIAL_CREDITS,
+          creditsGranted: 0,
           expiresAt,
         },
         include: {
-          account: { select: { email: true, creditsBalance: true } },
-        },
-      });
-      await transaction.validatorCreditTransaction.create({
-        data: {
-          accountId: account.id,
-          accessKeyId: key.id,
-          amount: TELEGRAM_TRIAL_CREDITS,
-          balanceAfter: TELEGRAM_TRIAL_CREDITS,
-          kind: "trial_grant",
-          description: "Telegram bot 7-day trial credits",
-          referenceType: "telegram_trial",
-          referenceId: trial.id,
-          metadata: {
-            telegramUserId: input.telegramUserId.toString(),
-            trialDays: TELEGRAM_TRIAL_DAYS,
-          } satisfies Prisma.InputJsonValue,
+          account: { select: { email: true } },
         },
       });
       return trialView(trial, false);

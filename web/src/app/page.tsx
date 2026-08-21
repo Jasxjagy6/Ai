@@ -22,6 +22,8 @@ import { NewsletterSignup } from "@/components/newsletter-signup";
 import { auth } from "@/lib/auth";
 import { SignalDeskLanding } from "@/components/validator/signal-desk-landing";
 import { getValidatorPlans, VALIDATOR_PLAN_CODES } from "@/lib/validator-plans";
+import { getSignalDeskAccount } from "@/lib/validator-auth";
+import { redirect } from "next/navigation";
 
 const COMPANIONS = [
   {
@@ -133,7 +135,7 @@ export async function generateMetadata(): Promise<Metadata> {
     ? {
         title: "Signal Desk | Telegram Intelligence Workspace",
         description:
-          "Validate Telegram data, operate account fleets, and manage durable outreach from one credit-based workspace.",
+          "Validate Telegram data, operate account fleets, and manage durable outreach with one active subscription.",
       }
     : {
         title: "Aria | Your AI Companion",
@@ -144,7 +146,11 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default async function Home() {
   if (process.env.VALIDATOR_STANDALONE === "true") {
-    const validatorPlans = await getValidatorPlans();
+    const [validatorPlans, account] = await Promise.all([
+      getValidatorPlans(),
+      getSignalDeskAccount(),
+    ]);
+    if (account) redirect("/workspace");
     return (
       <SignalDeskLanding
         plans={VALIDATOR_PLAN_CODES.map((code) => validatorPlans[code]).filter(

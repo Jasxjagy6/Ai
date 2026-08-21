@@ -4,7 +4,7 @@ import { aiConfig } from "@/lib/ai-chatter";
 export const AI_CAMPAIGN_ACTIVE_STATUSES = [
   "starting",
   "running",
-  "credit_grace",
+  "subscription_paused",
 ] as const;
 export const AI_CAMPAIGN_TERMINAL_STATUSES = [
   "stopped",
@@ -53,12 +53,9 @@ export function aiCampaignSummary(campaign: {
   messagesReceived: number;
   messagesSent: number;
   failedCount: number;
-  creditsUsed: number;
   startedAt: Date;
   endsAt: Date | null;
   stoppedAt: Date | null;
-  creditGraceStartedAt: Date | null;
-  creditGraceEndsAt: Date | null;
   lastError: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -90,12 +87,9 @@ export function aiCampaignSummary(campaign: {
     messagesReceived: campaign.messagesReceived,
     messagesSent: campaign.messagesSent,
     failedCount: campaign.failedCount,
-    creditsUsed: campaign.creditsUsed,
     startedAt: campaign.startedAt,
     endsAt: campaign.endsAt,
     stoppedAt: campaign.stoppedAt,
-    creditGraceStartedAt: campaign.creditGraceStartedAt,
-    creditGraceEndsAt: campaign.creditGraceEndsAt,
     lastError: campaign.lastError,
     createdAt: campaign.createdAt,
     updatedAt: campaign.updatedAt,

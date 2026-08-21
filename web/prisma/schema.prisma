@@ -286,6 +286,7 @@ model ValidatorAccount {
   accountSettingsBatches   TelegramAccountSettingsBatch[]
   accountSettingsJobs      TelegramAccountSettingsJob[]
   telegramClientCommands   TelegramClientCommand[]
+  telegramDraftJobs        TelegramDraftJob[]
   telegramTrial            ValidatorTelegramTrial?
 
   @@index([referredById])
@@ -300,6 +301,7 @@ model ValidatorAccessKey {
   label               String                       @default("Primary key") @db.VarChar(80)
   keyHash             String                       @unique
   prefix              String                       @db.VarChar(24)
+  rawKeyEncrypted     String?
   revoked             Boolean                      @default(false)
   expiresAt           DateTime?
   lastUsedAt          DateTime?
@@ -360,17 +362,17 @@ model ValidatorPurchase {
 }
 
 model ValidatorTelegramTrial {
-  id                String              @id @default(cuid())
-  telegramUserId    BigInt              @unique
-  telegramUsername  String?             @db.VarChar(100)
-  telegramFirstName String?             @db.VarChar(100)
-  telegramLastName  String?             @db.VarChar(100)
-  accountId         String              @unique
-  account           ValidatorAccount    @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  accessKeyId       String              @unique
-  accessKey         ValidatorAccessKey  @relation(fields: [accessKeyId], references: [id], onDelete: Cascade)
-  creditsGranted    Int                 @default(2500)
-  claimedAt         DateTime            @default(now())
+  id                String             @id @default(cuid())
+  telegramUserId    BigInt             @unique
+  telegramUsername  String?            @db.VarChar(100)
+  telegramFirstName String?            @db.VarChar(100)
+  telegramLastName  String?            @db.VarChar(100)
+  accountId         String             @unique
+  account           ValidatorAccount   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  accessKeyId       String             @unique
+  accessKey         ValidatorAccessKey @relation(fields: [accessKeyId], references: [id], onDelete: Cascade)
+  creditsGranted    Int                @default(2500)
+  claimedAt         DateTime           @default(now())
   expiresAt         DateTime
 
   @@index([expiresAt])
@@ -407,6 +409,7 @@ model ValidatorAffiliateReward {
   rateBps           Int
   depositUsdCents   Int
   rewardCredits     Int
+  rewardDays        Int               @default(0)
   status            String            @default("credited") @db.VarChar(20)
   createdAt         DateTime          @default(now())
 
@@ -634,6 +637,7 @@ model TelegramSession {
   aiCampaignMemberships   AiCampaignSession[]
   accountSettingsJobs     TelegramAccountSettingsJob[]
   clientCommands          TelegramClientCommand[]
+  draftSessionJobs        TelegramDraftSessionJob[]
 
   @@unique([accountId, sessionFingerprint])
   @@index([accountId, createdAt])
@@ -749,6 +753,95 @@ model TelegramClientCommand {
   @@index([status, createdAt])
   @@index([accountId, sessionId, createdAt])
   @@index([expiresAt])
+}
+
+model TelegramDraftJob {
+  id                String                    @id @default(cuid())
+  accountId         String
+  account           ValidatorAccount          @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  name              String                    @db.VarChar(160)
+  message           String
+  scope             String                    @default("both") @db.VarChar(20)
+  filterWords       Json
+  historyDepth      Int                       @default(10)
+  status            String                    @default("pending") @db.VarChar(20)
+  totalSessions     Int                       @default(0)
+  processedSessions Int                       @default(0)
+  completedSessions Int                       @default(0)
+  failedSessions    Int                       @default(0)
+  skippedSessions   Int                       @default(0)
+  totalChats        Int                       @default(0)
+  processedChats    Int                       @default(0)
+  draftedChats      Int                       @default(0)
+  filteredChats     Int                       @default(0)
+  failedChats       Int                       @default(0)
+  cancelRequested   Boolean                   @default(false)
+  metadata          Json?
+  errorMessage      String?
+  startedAt         DateTime?
+  finishedAt        DateTime?
+  lastProgressAt    DateTime                  @default(now())
+  createdAt         DateTime                  @default(now())
+  updatedAt         DateTime                  @updatedAt
+  sessions          TelegramDraftSessionJob[]
+  results           TelegramDraftResult[]
+
+  @@index([accountId, createdAt])
+  @@index([status, createdAt])
+}
+
+model TelegramDraftSessionJob {
+  id               String                @id @default(cuid())
+  draftJobId       String
+  draftJob         TelegramDraftJob      @relation(fields: [draftJobId], references: [id], onDelete: Cascade)
+  sessionId        String?
+  session          TelegramSession?      @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  sessionLabel     String                @db.VarChar(160)
+  status           String                @default("pending") @db.VarChar(20)
+  position         Int                   @default(0)
+  totalChats       Int                   @default(0)
+  processedChats   Int                   @default(0)
+  draftedChats     Int                   @default(0)
+  filteredChats    Int                   @default(0)
+  failedChats      Int                   @default(0)
+  currentChatTitle String?               @db.VarChar(255)
+  result           Json?
+  errorCode        String?               @db.VarChar(100)
+  errorMessage     String?
+  attempts         Int                   @default(0)
+  claimedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  results          TelegramDraftResult[]
+
+  @@unique([draftJobId, sessionId])
+  @@index([status, createdAt])
+  @@index([draftJobId, status, position])
+  @@index([sessionId, createdAt])
+}
+
+model TelegramDraftResult {
+  id                String                  @id @default(cuid())
+  draftJobId        String
+  draftJob          TelegramDraftJob        @relation(fields: [draftJobId], references: [id], onDelete: Cascade)
+  draftSessionJobId String
+  draftSessionJob   TelegramDraftSessionJob @relation(fields: [draftSessionJobId], references: [id], onDelete: Cascade)
+  chatId            BigInt
+  chatTitle         String                  @db.VarChar(255)
+  chatUsername      String?                 @db.VarChar(100)
+  chatType          String                  @db.VarChar(30)
+  status            String                  @db.VarChar(20)
+  matchedFilter     String?                 @db.VarChar(100)
+  inspectedMessages Int                     @default(0)
+  errorCode         String?                 @db.VarChar(100)
+  errorMessage      String?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  @@unique([draftSessionJobId, chatId])
+  @@index([draftJobId, status, createdAt])
+  @@index([draftSessionJobId, createdAt])
 }
 
 model TelegramLoginFlow {
@@ -1032,21 +1125,21 @@ model AiCampaign {
 }
 
 model AiCampaignSession {
-  id               String           @id @default(cuid())
+  id               String          @id @default(cuid())
   campaignId       String
-  campaign         AiCampaign       @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  campaign         AiCampaign      @relation(fields: [campaignId], references: [id], onDelete: Cascade)
   sessionId        String
-  session          TelegramSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  activeSessionId  String?          @unique
-  position         Int              @default(0)
-  runtimeStatus    String           @default("starting") @db.VarChar(30)
+  session          TelegramSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  activeSessionId  String?         @unique
+  position         Int             @default(0)
+  runtimeStatus    String          @default("starting") @db.VarChar(30)
   lastConnectedAt  DateTime?
   lastHeartbeatAt  DateTime?
   lastError        String?
-  catchupRequested Boolean          @default(true)
+  catchupRequested Boolean         @default(true)
   catchupClaimedAt DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
 
   @@unique([campaignId, sessionId])
   @@index([campaignId, position])

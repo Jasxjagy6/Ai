@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { clearValidatorSession, createValidatorSession, requireSignalDeskAccount } from "@/lib/validator-auth";
+import { clearValidatorSession, createValidatorSession, getSignalDeskAccount } from "@/lib/validator-auth";
 
 export async function GET() {
-  const account = await requireSignalDeskAccount();
+  const account = await getSignalDeskAccount();
   return account
     ? NextResponse.json({ authenticated: true, account })
     : NextResponse.json({ authenticated: false }, { status: 401 });

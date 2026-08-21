@@ -3,6 +3,8 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   createValidatorSessionForAccount,
+  decryptValidatorAccessKey,
+  encryptValidatorAccessKey,
   ensureValidatorReferralCode,
 } from "@/lib/validator-auth";
 import { getValidatorPlans, ValidatorPlanCode } from "@/lib/validator-plans";
@@ -22,7 +24,7 @@ function hash(value: string) {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function rawKeyForPurchase(purchaseId: string) {
+export function rawKeyForPurchase(purchaseId: string) {
   const secret = process.env.VALIDATOR_KEY_SECRET || merchantKey();
   const value = createHmac("sha256", secret)
     .update(`validator-purchase:${purchaseId}`)
@@ -121,7 +123,7 @@ async function createInvoice(payload: {
         order_id: payload.orderId,
         description: payload.description,
         thanks_message:
-          "Payment confirmed. Return to Signal Desk to activate your credits.",
+          "Payment confirmed. Return to Signal Desk to activate your subscription.",
       }),
     });
     return {
@@ -152,6 +154,7 @@ async function applyAffiliateReward(
     id: string;
     accountId: string;
     amountUsdCents: number;
+    durationDays: number | null;
   },
 ) {
   if (purchase.amountUsdCents <= 0) return;
@@ -172,10 +175,8 @@ async function applyAffiliateReward(
     0,
     Math.min(10_000, referrer?.affiliateRateBps ?? settings.affiliateRateBps),
   );
-  const rewardCredits = Math.floor(
-    (purchase.amountUsdCents * settings.creditsPerUsd * rateBps) / 1_000_000,
-  );
-  if (!rewardCredits) return;
+  const rewardDays = Math.floor((Number(purchase.durationDays || 0) * rateBps) / 10_000);
+  if (!rewardDays) return;
   const existing = await transaction.validatorAffiliateReward.findUnique({
     where: { purchaseId: purchase.id },
   });
@@ -187,26 +188,24 @@ async function applyAffiliateReward(
       purchaseId: purchase.id,
       rateBps,
       depositUsdCents: purchase.amountUsdCents,
-      rewardCredits,
+      rewardCredits: 0,
+      rewardDays,
     },
   });
-  const account = await transaction.validatorAccount.update({
+  const rewardBase = new Date();
+  const referrerAccount = await transaction.validatorAccount.findUniqueOrThrow({
+    where: { id: customer.referredById },
+    select: { planExpiresAt: true },
+  });
+  const startsAt =
+    referrerAccount.planExpiresAt && referrerAccount.planExpiresAt > rewardBase
+      ? referrerAccount.planExpiresAt
+      : rewardBase;
+  await transaction.validatorAccount.update({
     where: { id: customer.referredById },
     data: {
-      creditsBalance: { increment: rewardCredits },
-      creditsPurchased: { increment: rewardCredits },
-    },
-    select: { creditsBalance: true },
-  });
-  await transaction.validatorCreditTransaction.create({
-    data: {
-      accountId: customer.referredById,
-      amount: rewardCredits,
-      balanceAfter: account.creditsBalance,
-      kind: "affiliate_reward",
-      description: `Affiliate reward from a $${(purchase.amountUsdCents / 100).toFixed(2)} deposit`,
-      referenceType: "purchase",
-      referenceId: purchase.id,
+      currentPlanCode: "affiliate_reward",
+      planExpiresAt: new Date(startsAt.getTime() + rewardDays * 86_400_000),
     },
   });
 }
@@ -230,6 +229,7 @@ async function fulfillPurchase(purchaseId: string) {
             label: `${purchase.planName} access`,
             keyHash: hash(raw),
             prefix: `${raw.slice(0, 15)}...`,
+            rawKeyEncrypted: encryptValidatorAccessKey(raw),
             expiresAt: null,
             planCode: purchase.planCode,
             validatorAccess: true,
@@ -259,38 +259,19 @@ async function fulfillPurchase(purchaseId: string) {
           : purchase.purchaseType === "plan"
             ? null
             : undefined;
-      const account = await transaction.validatorAccount.update({
+      await transaction.validatorAccount.update({
         where: { id: purchase.accountId },
         data: {
-          creditsBalance: { increment: purchase.creditsAmount },
-          creditsPurchased: { increment: purchase.creditsAmount },
-          ...(purchase.purchaseType === "plan"
-            ? {
-                currentPlanCode: purchase.planCode,
-                planExpiresAt,
-                lastCreditTopupAt: now,
-              }
-            : { lastCreditTopupAt: now }),
+          active: true,
+          currentPlanCode: purchase.planCode,
+          planExpiresAt,
         },
-        select: { creditsBalance: true },
       });
-      if (purchase.creditsAmount > 0) {
-        await transaction.validatorCreditTransaction.create({
-          data: {
-            accountId: purchase.accountId,
-            accessKeyId,
-            amount: purchase.creditsAmount,
-            balanceAfter: account.creditsBalance,
-            kind: purchase.purchaseType === "plan" ? "plan_credit" : "topup",
-            description:
-              purchase.purchaseType === "plan"
-                ? `${purchase.planName} included credits`
-                : `${purchase.planName} credit top-up`,
-            referenceType: "purchase",
-            referenceId: purchase.id,
-          },
+      if (accessKeyId)
+        await transaction.validatorAccessKey.update({
+          where: { id: accessKeyId },
+          data: { planCode: purchase.planCode, expiresAt: null, revoked: false },
         });
-      }
       await applyAffiliateReward(transaction, purchase);
       purchase = await transaction.validatorPurchase.update({
         where: { id: purchase.id },
@@ -370,9 +351,7 @@ async function startPurchase(
     email: string;
     planCode: string;
     planName: string;
-    purchaseType: "plan" | "topup";
     amountUsdCents: number;
-    creditsAmount: number;
     durationDays?: number | null;
     validatorAccess?: boolean;
     messagingAccess?: boolean;
@@ -391,9 +370,9 @@ async function startPurchase(
       email: purchase.email,
       planCode: purchase.planCode,
       planName: purchase.planName,
-      purchaseType: purchase.purchaseType,
+      purchaseType: "plan",
       amountUsdCents: purchase.amountUsdCents,
-      creditsAmount: purchase.creditsAmount,
+      creditsAmount: 0,
       durationDays: purchase.durationDays,
       validatorAccess: purchase.validatorAccess ?? true,
       messagingAccess: purchase.messagingAccess ?? true,
@@ -442,57 +421,41 @@ export async function startValidatorPlanPurchase(
   planCode: ValidatorPlanCode,
   origin: string,
   referralCode?: string | null,
+  existingAccount?: { id: string; email: string; accessKeyId: string | null } | null,
 ) {
-  const email = emailInput.trim().toLowerCase();
+  const email = existingAccount?.email || emailInput.trim().toLowerCase();
   const plans = await getValidatorPlans();
   const plan = plans[planCode];
   if (!plan?.enabled) throw new Error("This plan is not available");
-  const account = await prisma.validatorAccount.upsert({
-    where: { email },
-    update: { active: true },
-    create: { email },
-  });
+  const account = existingAccount
+    ? await prisma.validatorAccount.findUniqueOrThrow({ where: { id: existingAccount.id } })
+    : await prisma.validatorAccount.upsert({
+        where: { email },
+        update: {},
+        create: { email },
+      });
+  const existingKey = existingAccount?.accessKeyId
+    ? { id: existingAccount.accessKeyId }
+    : await prisma.validatorAccessKey.findFirst({
+        where: { accountId: account.id, revoked: false },
+        orderBy: { createdAt: "asc" },
+        select: { id: true },
+      });
   await ensureValidatorReferralCode(account.id);
   await attachReferral(account.id, referralCode);
   return startPurchase(
     {
       accountId: account.id,
+      accessKeyId: existingKey?.id || null,
       email,
       planCode,
       planName: plan.name,
-      purchaseType: "plan",
       amountUsdCents: plan.priceUsdCents,
-      creditsAmount: plan.creditsIncluded,
       durationDays: plan.durationDays,
       validatorAccess: true,
       messagingAccess: true,
       sessionLimit: null,
       referralCode: referralCode?.trim().toUpperCase() || null,
-    },
-    origin,
-  );
-}
-
-export async function startValidatorTopup(
-  account: { id: string; email: string; accessKeyId: string | null },
-  packCode: string,
-  origin: string,
-) {
-  const settings = await getValidatorCreditSettings();
-  const pack = settings.topups.find(
-    (candidate) => candidate.code === packCode && candidate.enabled,
-  );
-  if (!pack) throw new Error("This credit pack is not available");
-  return startPurchase(
-    {
-      accountId: account.id,
-      accessKeyId: account.accessKeyId,
-      email: account.email,
-      planCode: `topup_${pack.code}`,
-      planName: pack.name,
-      purchaseType: "topup",
-      amountUsdCents: pack.priceUsdCents,
-      creditsAmount: pack.credits,
     },
     origin,
   );
@@ -505,7 +468,7 @@ export async function getValidatorPurchase(
 ) {
   let purchase = await prisma.validatorPurchase.findUnique({
     where: { id: purchaseId },
-    include: { accessKey: true },
+    include: { accessKey: true, account: { select: { planExpiresAt: true } } },
   });
   if (!purchase || !claimMatches(claimToken, purchase.claimTokenHash))
     return null;
@@ -519,7 +482,7 @@ export async function getValidatorPurchase(
     await syncPayment(purchase.id).catch(() => undefined);
     purchase = await prisma.validatorPurchase.findUnique({
       where: { id: purchaseId },
-      include: { accessKey: true },
+      include: { accessKey: true, account: { select: { planExpiresAt: true } } },
     });
   }
   if (!purchase) return null;
@@ -529,11 +492,11 @@ export async function getValidatorPurchase(
     planCode: purchase.planCode,
     planName: purchase.planName,
     purchaseType: purchase.purchaseType,
-    creditsAmount: purchase.creditsAmount,
+    durationDays: purchase.durationDays,
     status: purchase.status,
     amountUsdCents: purchase.amountUsdCents,
     paymentUrl: purchase.paymentUrl,
-    expiresAt: purchase.accessKey?.expiresAt || null,
+    expiresAt: purchase.account.planExpiresAt,
     issued: !!purchase.fulfilledAt,
   };
 }
@@ -561,8 +524,7 @@ export async function claimValidatorPurchase(
   });
   return {
     account,
-    key:
-      purchase.purchaseType === "plan" ? rawKeyForPurchase(purchase.id) : null,
+    key: decryptValidatorAccessKey(purchase.accessKey?.rawKeyEncrypted || null),
     purchase: view,
   };
 }

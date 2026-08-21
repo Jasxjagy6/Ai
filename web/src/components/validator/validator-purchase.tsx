@@ -6,9 +6,8 @@ import {
   ArrowLeft,
   ArrowRight,
   Check,
-  Coins,
   Copy,
-  Crown,
+  CalendarDays,
   KeyRound,
   Loader2,
   Radar,
@@ -23,8 +22,8 @@ type Purchase = {
   email: string;
   planCode: string;
   planName: string;
-  purchaseType: "plan" | "topup";
-  creditsAmount: number;
+  purchaseType: "plan";
+  durationDays: number;
   status: string;
   amountUsdCents: number;
   paymentUrl: string | null;
@@ -59,7 +58,7 @@ export function ValidatorPurchase({
     plans.find((plan) => plan.code === initialPlan)?.code ||
       plans.find((plan) => plan.featured)?.code ||
       plans[0]?.code ||
-      "basic",
+      "month",
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -198,7 +197,7 @@ export function ValidatorPurchase({
                     SIGNAL DESK
                   </p>
                   <p className="text-[9px] uppercase tracking-[0.18em] text-[#5f6e69]">
-                    Secure credit activation
+                    Secure subscription activation
                   </p>
                 </div>
               </div>
@@ -207,19 +206,18 @@ export function ValidatorPurchase({
               {claimed ? (
                 <div className="validator-reveal">
                   <span className="flex h-14 w-14 items-center justify-center rounded-2xl border border-[#b8ff4b]/25 bg-[#b8ff4b]/10 text-[#b8ff4b]">
-                    {key ? <KeyRound size={24} /> : <Coins size={24} />}
+                    {key ? <KeyRound size={24} /> : <CalendarDays size={24} />}
                   </span>
                   <p className="mt-6 text-[10px] font-bold uppercase tracking-[0.2em] text-[#b8ff4b]">
                     Purchase activated
                   </p>
                   <h1 className="mt-2 text-3xl font-semibold tracking-[-0.04em]">
-                    {purchase?.creditsAmount.toLocaleString()} credits are
-                    ready.
+                    Your {purchase?.durationDays}-day subscription is active.
                   </h1>
                   <p className="mt-3 text-sm leading-6 text-[#81908c]">
                     {key
                       ? "Your plan includes a new access key. Keep it somewhere safe; this browser is already signed in."
-                      : "Your existing workspace balance has been updated. You can continue operating immediately."}
+                      : "Your existing workspace subscription was extended. You can continue operating immediately."}
                   </p>
                   {key && (
                     <div className="mt-6 flex items-center gap-2 rounded-2xl border border-[#b8ff4b]/20 bg-[#071111] p-4">
@@ -250,7 +248,7 @@ export function ValidatorPurchase({
                     Payment {purchase?.status}.
                   </h1>
                   <p className="mt-3 text-sm text-[#81908c]">
-                    No credits were issued. Return to the plans and try again
+                    No subscription time was issued. Return to the plans and try again
                     when ready.
                   </p>
                   <Link
@@ -300,7 +298,7 @@ export function ValidatorPurchase({
                 SIGNAL DESK
               </p>
               <p className="text-[9px] uppercase tracking-[0.18em] text-[#5f6e69]">
-                Plans and credits
+                Subscriptions
               </p>
             </div>
           </Link>
@@ -314,15 +312,14 @@ export function ValidatorPurchase({
         <section className="mx-auto max-w-3xl pb-10 pt-16 text-center sm:pt-24 validator-reveal">
           <span className="inline-flex items-center gap-2 rounded-full border border-[#b8ff4b]/20 bg-[#b8ff4b]/[0.07] px-3 py-1.5 text-[10px] font-bold uppercase tracking-[0.18em] text-[#b8ff4b]">
             <Sparkles size={12} />
-            Credits included with every plan
+            Every feature included
           </span>
           <h1 className="mt-6 text-4xl font-semibold tracking-[-0.055em] sm:text-6xl">
             Choose your operating level.
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-sm leading-7 text-[#81908c] sm:text-base">
-            Every plan includes every Signal Desk feature and unlimited fleet
-            access. Choose by included credits; operations draw from one
-            transparent balance when they run.
+            Every subscription includes every Signal Desk feature, unlimited
+            fleet access, and unlimited operations while the period is active.
           </p>
         </section>
         <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -341,11 +338,7 @@ export function ValidatorPurchase({
               <span
                 className={`flex h-10 w-10 items-center justify-center rounded-xl ${selected === plan.code ? "bg-[#b8ff4b]/15 text-[#b8ff4b]" : "bg-white/[0.04] text-[#71807c]"}`}
               >
-                {plan.code === "enterprise" ? (
-                  <Crown size={18} />
-                ) : (
-                  <WalletCards size={18} />
-                )}
+                {plan.code === "year" ? <CalendarDays size={18} /> : <WalletCards size={18} />}
               </span>
               <p className="mt-5 text-lg font-semibold">{plan.name}</p>
               <p className="mt-1 min-h-10 text-xs leading-5 text-[#65736f]">
@@ -355,7 +348,7 @@ export function ValidatorPurchase({
                 ${(plan.priceUsdCents / 100).toFixed(2)}
               </p>
               <p className="mt-2 font-mono text-xs text-[#b8ff4b]">
-                {plan.creditsIncluded.toLocaleString()} credits
+                {plan.durationDays} days full access
               </p>
               <div className="mt-5 space-y-2 border-t border-white/[0.07] pt-4">
                 {plan.features.map((feature) => (

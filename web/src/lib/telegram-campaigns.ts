@@ -3,10 +3,6 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import {
-  debitValidatorCredits,
-  quoteValidatorTask,
-} from "@/lib/validator-credits";
-import {
   TelegramControlError,
   telegramSessionSafety,
 } from "@/lib/telegram-control";
@@ -363,10 +359,6 @@ export async function createTelegramCampaign(
       413,
       "TELEGRAM_CAMPAIGN_TOO_LARGE",
     );
-  const creditQuote = await quoteValidatorTask("campaign_send", {
-    items: transmissions.length,
-    sessions: sessionIds.length,
-  });
   const capacities = new Map(
     sessions.map((session) => [
       session.id,
@@ -444,8 +436,8 @@ export async function createTelegramCampaign(
           totalCount: transmissions.length,
           sessionCount: sessionIds.length,
           reservedMessages: transmissions.length,
-          reservedCredits: creditQuote.credits,
-          creditItemCost: creditQuote.price.itemCost,
+          reservedCredits: 0,
+          creditItemCost: 0,
           trackReplies: data.targetType === "users" && data.trackReplies,
           replyWindowHours: data.replyWindowHours,
           configuration: {
@@ -457,7 +449,6 @@ export async function createTelegramCampaign(
             cooldownSecondsMin: data.cooldownSecondsMin,
             cooldownSecondsMax: data.cooldownSecondsMax,
             perSessionQuota: data.perSessionQuota,
-            creditPricing: creditQuote.price,
           },
           sessions: {
             create: sessionIds.map((sessionId, position) => ({
@@ -466,20 +457,6 @@ export async function createTelegramCampaign(
               assignedCount: assignedCounts.get(sessionId) || 0,
             })),
           },
-        },
-      });
-      await debitValidatorCredits(transaction, {
-        accountId: account.id,
-        accessKeyId: account.accessKeyId,
-        credits: creditQuote.credits,
-        taskCode: "campaign_send",
-        description: `${transmissions.length.toLocaleString()} Telegram message attempts`,
-        referenceType: "telegram_campaign",
-        referenceId: campaign.id,
-        metadata: {
-          attempts: transmissions.length,
-          sessions: sessionIds.length,
-          mode: data.mode,
         },
       });
       for (let offset = 0; offset < transmissions.length; offset += 1000) {

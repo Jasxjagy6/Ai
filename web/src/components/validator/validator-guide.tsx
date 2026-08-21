@@ -9,7 +9,7 @@ import {
   BookOpen,
   Check,
   CheckCircle2,
-  Coins,
+  CalendarDays,
   Database,
   FileText,
   LayoutDashboard,
@@ -113,7 +113,7 @@ const CHAPTERS: GuideChapter[] = [
     prerequisites: [
       "Validator access enabled on the current key.",
       "A non-profile source list containing public usernames or t.me user links.",
-      "Enough credits for the unique usernames accepted into the run.",
+      "An active Signal Desk subscription.",
     ],
     steps: [
       { title: "Prepare the source", detail: "Import a Usernames list in Lists. Normalize mixed files first when they contain links, IDs, phones, or inconsistent columns." },
@@ -274,7 +274,7 @@ const CHAPTERS: GuideChapter[] = [
     warnings: [
       "Mass messaging requires an active logged-in session, a clean SpamBot check from the last seven days, risk below 70, no health cooldown, and daily warmup capacity.",
       "Deleting a session removes encrypted session material and fleet membership. Existing reports retain a deleted-session marker.",
-      "Session import, SpamBot checks, and manual warmup can consume credits according to current task pricing.",
+      "Session import, SpamBot checks, and manual warmup are included while the subscription is active.",
     ],
     visual: {
       eyebrow: "MTProto account vault",
@@ -388,7 +388,7 @@ const CHAPTERS: GuideChapter[] = [
     accent: "#d8b7ff",
     access: "messaging",
     prerequisites: [
-      "Messaging access and enough message allowance and credits for the estimated attempts.",
+      "An active subscription and at least one eligible Telegram session.",
       "At least one active session that currently passes mass-DM safety checks.",
       "A message and at least one valid target from a list or manual input.",
     ],
@@ -398,7 +398,7 @@ const CHAPTERS: GuideChapter[] = [
       { title: "Choose delivery and accounts", detail: "Pick a delivery mode and eligible sessions, or apply a named fleet. Direct message requires exactly one account and one recipient." },
       { title: "Set formatting and pacing", detail: "Choose plain text, Markdown, or HTML. Automatic pacing uses safety bands; manual pacing exposes delay, burst, and cooldown controls." },
       { title: "Estimate and test", detail: "Review the attempt estimate. Test One creates a normal one-attempt billable campaign with the current message and formatting." },
-      { title: "Launch or schedule", detail: "A normal launch reserves quota and credits atomically. A schedule creates a new durable campaign and report on each run." },
+      { title: "Launch or schedule", detail: "A normal launch creates a durable campaign immediately. A schedule creates a new durable campaign and report on each run." },
     ],
     controls: [
       { name: "Balanced rotation", detail: "Assigns unique recipients across selected sessions in round-robin order." },
@@ -419,7 +419,7 @@ const CHAPTERS: GuideChapter[] = [
       "User fan-out rejects more than 50 unique targets without truncating the list.",
       "Group and channel workflows always use every-account fan-out and do not accept a source list.",
       "Manual and list targets are deduplicated before the final attempt count is reserved.",
-      "Unsent reserved attempts are refunded after completion, cancellation, access revocation, or worker failure. Sent messages remain charged.",
+      "Campaigns stop sending when the workspace subscription expires and can continue after renewal.",
     ],
     visual: {
       eyebrow: "Durable delivery desk",
@@ -477,40 +477,39 @@ const CHAPTERS: GuideChapter[] = [
   {
     id: "credits",
     destination: "credits",
-    title: "Credits & Plan",
-    kicker: "Capacity and billing",
-    summary: "Review available credits, current access, expiry, issued and consumed totals, top-up packs, and the credit transaction ledger.",
-    icon: Coins,
+    title: "Subscription",
+    kicker: "Access and billing",
+    summary: "Review the active subscription, expiry date, included access, and renewal options.",
+    icon: CalendarDays,
     accent: "#b8ff4b",
     access: "all",
-    prerequisites: ["A signed-in workspace. Top-ups require completing the hosted payment flow."],
+    prerequisites: ["A signed-in workspace. Renewals require completing the hosted payment flow."],
     steps: [
-      { title: "Check current capacity", detail: "The balance card shows available credits plus total issued and consumed credits." },
-      { title: "Review access", detail: "Confirm the current plan, workspace email, key expiry, and whether paid tasks are ready." },
-      { title: "Select a top-up", detail: "Choose an enabled credit pack. The claim token is stored locally before redirecting to payment." },
-      { title: "Audit transactions", detail: "The recent ledger shows every debit or credit, timestamp, amount, and balance after the movement." },
-      { title: "Compare plans", detail: "Open the Buy page when you need different Validator, Messaging, AI, session, or message allowances." },
+      { title: "Check remaining time", detail: "The subscription card shows whether access is active and how many days remain." },
+      { title: "Review access", detail: "Confirm the subscription period, workspace email, expiry, and included all-feature access." },
+      { title: "Renew or extend", detail: "Choose a period on the Buy page. Confirmed renewals extend from the current expiry when it is still in the future." },
+      { title: "Keep the same key", detail: "The workspace access key remains linked across renewals unless an admin rotates it." },
     ],
     controls: [
-      { name: "Available balance", detail: "Credits currently available for priced operations." },
-      { name: "Current operating level", detail: "The plan attached to the active access key." },
-      { name: "Top-up pack", detail: "Adds credits without requiring a workspace reset." },
-      { name: "Credit activity", detail: "An immutable accounting view of task charges, refunds, purchases, and affiliate rewards." },
+      { name: "Subscription status", detail: "Shows active or expired access." },
+      { name: "Current period", detail: "The latest subscription period attached to the workspace." },
+      { name: "Expiry", detail: "The exact date and time when feature access pauses." },
+      { name: "Access key", detail: "Shows the non-sensitive key prefix linked to the workspace." },
     ],
-    results: ["Confirmed purchases and rewards update the balance and transaction ledger automatically."],
+    results: ["Confirmed purchases and affiliate rewards extend the workspace subscription automatically."],
     warnings: [
-      "Current task costs are controlled by workspace pricing settings and can differ by items or sessions.",
-      "An expired key can still sign in, but paid tools require reactivated access or a valid credit-backed plan.",
+      "An expired subscription keeps the workspace signed in for renewal, but operational APIs and workers remain locked.",
+      "All periods include every feature and unlimited operational usage while active.",
     ],
     visual: {
-      eyebrow: "Available balance",
-      title: "Workspace capacity",
-      metric: "24,500",
-      metricLabel: "credits available",
+      eyebrow: "Signal Desk subscription",
+      title: "Workspace access",
+      metric: "24 DAYS",
+      metricLabel: "remaining",
       rows: [
-        { label: "Telegram campaign", value: "-500", tone: "warn" },
-        { label: "Credit top-up", value: "+10,000", tone: "good" },
-        { label: "Affiliate reward", value: "+240", tone: "info" },
+        { label: "Included access", value: "ALL FEATURES", tone: "good" },
+        { label: "Operational usage", value: "UNLIMITED", tone: "info" },
+        { label: "Renewal", value: "EXTENDS TIME", tone: "warn" },
       ],
     },
   },
@@ -573,25 +572,25 @@ const CHAPTERS: GuideChapter[] = [
     id: "affiliates",
     destination: "affiliates",
     title: "Affiliate Rewards",
-    kicker: "Referral credits",
-    summary: "Share the workspace referral link and receive automatic credit rewards from confirmed paid plans and top-ups by referred users.",
+    kicker: "Referral time",
+    summary: "Share the workspace referral link and receive extra subscription days from confirmed subscriptions purchased by referred users.",
     icon: Gift,
     accent: "#b8ff4b",
     access: "all",
     prerequisites: ["A workspace referral code and a referred user who completes a qualifying payment."],
     steps: [
       { title: "Copy your link", detail: "Use the copy button beside the referral URL. The link carries your workspace referral code into the Buy flow." },
-      { title: "Share it", detail: "The referred operator must enter through the tracked link before purchasing a plan or credit top-up." },
-      { title: "Receive rewards", detail: "After payment confirmation, the configured percentage is converted into workspace credits and added automatically." },
-      { title: "Audit earnings", detail: "Review invited-user count, tracked deposit value, reward credits, masked referred email, rate, and date." },
+      { title: "Share it", detail: "The referred operator must enter through the tracked link before purchasing a subscription." },
+      { title: "Receive rewards", detail: "After payment confirmation, the configured percentage of the purchased period is added as subscription days." },
+      { title: "Audit earnings", detail: "Review invited-user count, earned days, masked referred email, rate, and date." },
     ],
     controls: [
       { name: "Referral link", detail: "Tracked Buy URL unique to this workspace." },
       { name: "Referral code", detail: "The identifier embedded in the referral link." },
-      { name: "Reward metrics", detail: "Total referred users, earned credits, and tracked paid deposits." },
+      { name: "Reward metrics", detail: "Total referred users, earned subscription days, and reward rate." },
       { name: "Reward history", detail: "One row per confirmed qualifying payment and reward." },
     ],
-    results: ["Affiliate credits appear in both Reward History and the Credits transaction ledger."],
+    results: ["Affiliate days appear in Reward History and extend the subscription automatically."],
     warnings: ["The reward percentage is controlled by current workspace settings. Unconfirmed or failed payments do not produce rewards."],
     visual: {
       eyebrow: "Affiliate network",
@@ -599,8 +598,8 @@ const CHAPTERS: GuideChapter[] = [
       metric: "10%",
       metricLabel: "example reward rate",
       rows: [
-        { label: "jo***@mail.com", value: "+500 credits", tone: "good" },
-        { label: "an***@mail.com", value: "+240 credits", tone: "info" },
+        { label: "jo***@mail.com", value: "+30 days", tone: "good" },
+        { label: "an***@mail.com", value: "+18 days", tone: "info" },
         { label: "Referral link", value: "COPIED", tone: "warn" },
       ],
     },
@@ -752,9 +751,9 @@ export function ValidatorGuide({
 
       <section className="mt-5 rounded-2xl border border-[#65e6ff]/15 bg-[#65e6ff]/[0.035] p-4 sm:p-5">
         <div className="grid gap-4 md:grid-cols-3">
-          <div className="flex gap-3"><ShieldCheck size={17} className="shrink-0 text-[#65e6ff]" /><div><p className="text-xs font-semibold">Access locks</p><p className="mt-1 text-[10px] leading-4 text-[#71807c]">A lock in the sidebar means the active key lacks that feature. Open Credits & Plan or Buy to compare access levels.</p></div></div>
+          <div className="flex gap-3"><ShieldCheck size={17} className="shrink-0 text-[#65e6ff]" /><div><p className="text-xs font-semibold">Access locks</p><p className="mt-1 text-[10px] leading-4 text-[#71807c]">Operational tools lock when the subscription expires. Open Subscription or Buy to renew access.</p></div></div>
           <div className="flex gap-3"><Activity size={17} className="shrink-0 text-[#65e6ff]" /><div><p className="text-xs font-semibold">Durable work</p><p className="mt-1 text-[10px] leading-4 text-[#71807c]">Validator runs, campaigns, account changes, stories, and login flows are stored server-side instead of depending on the browser tab.</p></div></div>
-          <div className="flex gap-3"><KeyRound size={17} className="shrink-0 text-[#65e6ff]" /><div><p className="text-xs font-semibold">Workspace controls</p><p className="mt-1 text-[10px] leading-4 text-[#71807c]">Top Up adds credits, Refresh reloads workspace data, Support opens Telegram help, and Lock signs out of this workspace.</p></div></div>
+          <div className="flex gap-3"><KeyRound size={17} className="shrink-0 text-[#65e6ff]" /><div><p className="text-xs font-semibold">Workspace controls</p><p className="mt-1 text-[10px] leading-4 text-[#71807c]">Subscription opens renewal options, Refresh reloads workspace data, Support opens Telegram help, and Lock signs out.</p></div></div>
         </div>
       </section>
 

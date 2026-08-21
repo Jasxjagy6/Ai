@@ -3,11 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   Activity,
-  AlertCircle,
   ArrowLeft,
   Check,
   CircleStop,
-  Coins,
   Loader2,
   MessageCircleMore,
   Plus,
@@ -55,12 +53,9 @@ type Campaign = {
   messagesReceived: number;
   messagesSent: number;
   failedCount: number;
-  creditsUsed: number;
   startedAt: string;
   endsAt: string | null;
   stoppedAt: string | null;
-  creditGraceStartedAt: string | null;
-  creditGraceEndsAt: string | null;
   lastError: string | null;
   createdAt: string;
   updatedAt: string;
@@ -78,7 +73,6 @@ type Campaign = {
   }>;
 };
 type LandingData = {
-  creditsBalance: number;
   campaignLimit: number | null;
   activeCampaigns: number;
   campaigns: Campaign[];
@@ -167,7 +161,7 @@ const PRIMARY =
   "inline-flex items-center justify-center gap-2 rounded-xl bg-[#b8ff4b] px-4 py-2.5 text-sm font-bold text-[#07100d] transition hover:bg-[#ceff82] disabled:pointer-events-none disabled:opacity-40";
 const SECONDARY =
   "inline-flex items-center justify-center gap-2 rounded-xl border border-white/10 bg-white/[0.035] px-3.5 py-2.5 text-sm font-medium text-[#b8c5c1] transition hover:border-white/20 hover:bg-white/[0.07] hover:text-white disabled:pointer-events-none disabled:opacity-40";
-const ACTIVE = new Set(["starting", "running", "credit_grace"]);
+const ACTIVE = new Set(["starting", "running", "subscription_paused"]);
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -189,19 +183,9 @@ function relativeTime(value: string | null | undefined) {
   return new Date(value).toLocaleDateString();
 }
 
-function deadline(value: string | null) {
-  if (!value) return "";
-  return new Date(value).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
-
 function statusTone(status: string) {
   if (status === "running" || status === "listening") return "border-[#b8ff4b]/25 bg-[#b8ff4b]/[0.07] text-[#b8ff4b]";
-  if (status === "credit_grace") return "border-[#f4ca64]/30 bg-[#f4ca64]/[0.08] text-[#f4ca64]";
+  if (status === "subscription_paused") return "border-[#f4ca64]/30 bg-[#f4ca64]/[0.08] text-[#f4ca64]";
   if (status === "starting" || status === "processing" || status === "pending") return "border-[#65e6ff]/25 bg-[#65e6ff]/[0.07] text-[#8feeff]";
   if (status === "error" || status === "failed" || status === "grace_expired") return "border-[#ff7474]/25 bg-[#ff7474]/[0.07] text-[#ff9292]";
   return "border-white/10 bg-white/[0.035] text-[#82908b]";
@@ -388,7 +372,6 @@ export function AiChatterCampaignsView({
     return <div className="flex min-h-[65vh] items-center justify-center"><Loader2 size={24} className="animate-spin text-[#b8ff4b]" /></div>;
   }
 
-  const graceCampaigns = data.campaigns.filter((campaign) => campaign.status === "credit_grace");
   const limitReached = data.campaignLimit !== null && data.activeCampaigns >= data.campaignLimit;
 
   if (selectedId) {
@@ -473,24 +456,10 @@ export function AiChatterCampaignsView({
         </div>
       </section>
 
-      {(data.creditsBalance < 5 || graceCampaigns.length > 0) && (
-        <section className="mt-5 flex flex-col gap-3 rounded-2xl border border-[#f4ca64]/30 bg-[#f4ca64]/[0.08] p-4 sm:flex-row sm:items-center">
-          <AlertCircle size={20} className="shrink-0 text-[#f4ca64]" />
-          <div className="flex-1">
-            <p className="text-sm font-semibold text-[#ffe39a]">AI replies are paused for low credits</p>
-            <p className="mt-1 text-[10px] leading-4 text-[#c8ad68]">
-              Incoming messages still enter campaign memory. Refill to at least 5 credits to resume automatically
-              {graceCampaigns[0]?.creditGraceEndsAt ? ` before ${deadline(graceCampaigns[0].creditGraceEndsAt)}` : ""}.
-            </p>
-          </div>
-          <span className="font-mono text-lg font-semibold text-[#f4ca64]">{data.creditsBalance.toLocaleString()} cr</span>
-        </section>
-      )}
-
       <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Active campaigns" value={`${data.activeCampaigns} / ${data.campaignLimit ?? "∞"}`} icon={Radar} />
         <Metric label="Replies sent" value={data.campaigns.reduce((sum, campaign) => sum + campaign.messagesSent, 0).toLocaleString()} icon={Send} />
-        <Metric label="Credits used" value={data.campaigns.reduce((sum, campaign) => sum + campaign.creditsUsed, 0).toLocaleString()} icon={Coins} />
+        <Metric label="Incoming stored" value={data.campaigns.reduce((sum, campaign) => sum + campaign.messagesReceived, 0).toLocaleString()} icon={Activity} />
         <Metric label="Conversation memory" value={data.campaigns.reduce((sum, campaign) => sum + campaign.conversations, 0).toLocaleString()} icon={MessageCircleMore} />
       </div>
 
@@ -506,7 +475,7 @@ export function AiChatterCampaignsView({
           <button
             key={campaign.id}
             onClick={() => void loadDetail(campaign.id).catch((error) => notify(error.message, "error"))}
-            className={`group rounded-[22px] border p-5 text-left transition hover:-translate-y-0.5 hover:border-white/20 ${campaign.status === "credit_grace" ? "border-[#f4ca64]/25 bg-[#f4ca64]/[0.04]" : "border-white/[0.08] bg-[#0b1717]"}`}
+            className="group rounded-[22px] border border-white/[0.08] bg-[#0b1717] p-5 text-left transition hover:-translate-y-0.5 hover:border-white/20"
           >
             <div className="flex items-start gap-3">
               <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#65e6ff]/[0.08] text-[#65e6ff]"><Radar size={17} /></span>
@@ -516,16 +485,13 @@ export function AiChatterCampaignsView({
               </div>
               <StatusBadge status={campaign.status} />
             </div>
-            {campaign.status === "credit_grace" && (
-              <p className="mt-4 rounded-xl border border-[#f4ca64]/20 bg-[#f4ca64]/[0.06] px-3 py-2 text-[10px] text-[#f4ca64]">Refill by {deadline(campaign.creditGraceEndsAt)}</p>
-            )}
             <div className="mt-5 grid grid-cols-3 gap-2 border-y border-white/[0.06] py-4">
               <CardStat label="Accounts" value={`${campaign.liveListeners}/${campaign.sessionCount}`} />
               <CardStat label="Chats" value={campaign.conversations} />
               <CardStat label="Sent" value={campaign.messagesSent} />
             </div>
             <div className="mt-4 flex items-center gap-2 text-[9px] text-[#60706b]">
-              <span>{campaign.creditsUsed.toLocaleString()} credits</span>
+              <span>{campaign.messagesReceived.toLocaleString()} incoming</span>
               <span>·</span>
               <span>{campaign.jobs.toLocaleString()} jobs</span>
               <span className="ml-auto">Updated {relativeTime(campaign.updatedAt || campaign.createdAt)}</span>
@@ -770,7 +736,6 @@ function CampaignInspector({
           </div>
         </div>
       </section>
-      {campaign.status === "credit_grace" && <div className="mt-4 flex gap-3 rounded-2xl border border-[#f4ca64]/30 bg-[#f4ca64]/[0.08] p-4"><AlertCircle size={18} className="shrink-0 text-[#f4ca64]" /><div><p className="text-sm font-semibold text-[#ffe39a]">Low-credit grace period</p><p className="mt-1 text-[10px] leading-4 text-[#c8ad68]">Listeners continue storing incoming memory, but AI replies and follow-ups are paused. Refill before {deadline(campaign.creditGraceEndsAt)} to resume automatically.</p></div></div>}
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
         <Metric label="Assigned accounts" value={`${campaign.liveListeners} / ${campaign.sessionCount}`} icon={Users} />
         <Metric label="Conversations" value={overview.conversations.toLocaleString()} icon={MessageCircleMore} />
@@ -785,7 +750,7 @@ function CampaignInspector({
         {tab === "overview" && (
           <div className="grid gap-5 p-5 lg:grid-cols-2">
             <div><h3 className="font-semibold">Campaign policy</h3><dl className="mt-4 grid grid-cols-2 gap-3 text-xs"><Info label="Provider" value={campaign.provider} /><Info label="Language" value={campaign.provider === "capitalbot" ? campaign.config.capitalbot.language : "English"} /><Info label="Model / preset" value={campaign.provider === "capitalbot" ? `${campaign.modelId || "-"} / ${campaign.presetId || "-"}` : "Provider managed"} /><Info label="Memory limit" value={`${campaign.config.memoryMessageLimit} messages`} /><Info label="Reply delay" value={`${campaign.config.replyDelayMs} ms`} /><Info label="Delay jitter" value={`${campaign.config.replyDelayJitterMs} ms`} /></dl></div>
-            <div><h3 className="font-semibold">Runtime totals</h3><dl className="mt-4 grid grid-cols-2 gap-3 text-xs"><Info label="Incoming stored" value={campaign.messagesReceived.toLocaleString()} /><Info label="Credits charged" value={campaign.creditsUsed.toLocaleString()} /><Info label="Failed jobs" value={campaign.failedCount.toLocaleString()} /><Info label="Provider logs" value={campaign.responseLogs.toLocaleString()} /></dl>{campaign.lastError && <p className="mt-4 rounded-xl border border-[#ff7474]/20 bg-[#ff7474]/[0.06] p-3 text-[10px] leading-4 text-[#ff9292]">{campaign.lastError}</p>}</div>
+            <div><h3 className="font-semibold">Runtime totals</h3><dl className="mt-4 grid grid-cols-2 gap-3 text-xs"><Info label="Incoming stored" value={campaign.messagesReceived.toLocaleString()} /><Info label="Replies sent" value={campaign.messagesSent.toLocaleString()} /><Info label="Failed jobs" value={campaign.failedCount.toLocaleString()} /><Info label="Provider logs" value={campaign.responseLogs.toLocaleString()} /></dl>{campaign.lastError && <p className="mt-4 rounded-xl border border-[#ff7474]/20 bg-[#ff7474]/[0.06] p-3 text-[10px] leading-4 text-[#ff9292]">{campaign.lastError}</p>}</div>
           </div>
         )}
         {tab === "accounts" && (
